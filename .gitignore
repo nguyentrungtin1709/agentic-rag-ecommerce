@@ -1,0 +1,205 @@
+# =============================================================================
+# Python
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# Distribution / packaging
+.Python
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+pytestdebug.log
+
+# =============================================================================
+# Virtual Environments & Package Managers
+# =============================================================================
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# uv
+.uv/
+uv.lock
+
+# pipenv
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# =============================================================================
+# Environment & Secrets
+# =============================================================================
+.env
+.env.*
+!.env.example
+!.env.template
+*.pem
+*.key
+*.cert
+*.crt
+secrets/
+.secrets/
+
+# =============================================================================
+# IDE & Editors
+# =============================================================================
+# VS Code
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+
+# JetBrains (PyCharm, etc.)
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Vim / Neovim
+*.swp
+*.swo
+*~
+.netrwhist
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# =============================================================================
+# OS
+# =============================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Linux
+.directory
+.Trash-*
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# =============================================================================
+# Docker
+# =============================================================================
+docker-compose.override.yml
+.dockerignore
+
+# =============================================================================
+# Databases & Storage
+# =============================================================================
+*.sqlite
+*.sqlite3
+*.db
+
+# Qdrant local storage
+qdrant_storage/
+qdrant_data/
+
+# PostgreSQL dumps
+*.sql.gz
+*.dump
+
+# =============================================================================
+# Logging & Monitoring
+# =============================================================================
+*.log
+logs/
+log/
+
+# =============================================================================
+# LlamaIndex / LangChain Cache & Artifacts
+# =============================================================================
+.llamaindex/
+llamaindex_cache/
+langchain_cache/
+.langchain/
+chroma_db/
+vector_store/
+
+# =============================================================================
+# Jupyter Notebooks
+# =============================================================================
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# =============================================================================
+# Type Checkers & Linters
+# =============================================================================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+.pyre/
+.ruff_cache/
+
+# =============================================================================
+# Documentation
+# =============================================================================
+docs/_build/
+docs/site/
+site/
+
+# =============================================================================
+# Temporary & Misc
+# =============================================================================
+*.tmp
+*.temp
+*.bak
+*.backup
+tmp/
+temp/
+scratch/

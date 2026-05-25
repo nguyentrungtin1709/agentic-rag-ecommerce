@@ -1,0 +1,116 @@
+---
+title: LlamaIndex RAG Pipeline - Full Workflow Overview
+---
+flowchart TB
+    %% Data Sources
+    subgraph DataSources["Your Data"]
+        direction TB
+        DB[("Database<br/>(structured)")]
+        DOC["Document<br/>(unstructured)"]
+        API["API<br/>(programmatic)"]
+    end
+
+    %% Stage 0: Pre-Processing
+    subgraph PreProcessing["Pre-Processing"]
+        direction TB
+        Acquisition["Data Acquisition<br/>(multi-source collection)"]
+        Parsing["Parsing<br/>(OCR, HTML, tables, metadata)"]
+        Cleaning["Cleaning<br/>(noise removal, normalization)"]
+        Partitioning["Partitioning<br/>(paragraphs, sections, tables)"]
+        Acquisition --> Parsing --> Cleaning --> Partitioning
+    end
+
+    %% Stage 1: Loading
+    subgraph Loading["Loading"]
+        direction TB
+        Connectors["Connectors / Readers<br/>(LlamaHub)"]
+        Documents["Documents<br/>(container around data source)"]
+        Transformations["Transformations / Ingestion Pipeline<br/>(chunking, parsing, metadata)"]
+        Nodes["Nodes<br/>(atomic chunks of a Document)"]
+        Connectors --> Documents --> Transformations --> Nodes
+    end
+
+    %% Stage 2: Indexing
+    subgraph Indexing["Indexing"]
+        direction TB
+        Embeddings["Embeddings<br/>(numerical representations)"]
+        Index["VectorStoreIndex / Index<br/>(embeddings + metadata)"]
+        Embeddings --> Index
+    end
+
+    %% Stage 3: Storing
+    subgraph Storing["Storing"]
+        direction TB
+        StorageContext["Storage Context"]
+        VectorStore[("Vector Store<br/>(persisted index)")]
+        PersistLoad["Persist / Load<br/>(avoid re-indexing)"]
+        Metadata["Metadata / Doc Store"]
+        StorageContext --> VectorStore
+        StorageContext --> Metadata
+        VectorStore --> PersistLoad
+        Metadata --> PersistLoad
+    end
+
+    %% Stage 4: Querying
+    subgraph Querying["Querying"]
+        direction TB
+        QueryEngine["QueryEngine<br/>(orchestrates query flow)"]
+        QueryTransformation["Query Transformation<br/>(rewrite / expand / decompose)"]
+        Retriever["Retrievers<br/>(vector / keyword / hybrid)"]
+        Reranker["Re-ranking<br/>(cross-encoder / ColBERT)"]
+        PostProcessor["Node Postprocessors<br/>(filter / metadata replacement)"]
+        Synthesizer["Response Synthesizers<br/>(generate response from LLM)"]
+        Router["Routers<br/>(optional: select retriever or pipeline)"]
+        QueryEngine --> QueryTransformation --> Retriever --> Reranker --> PostProcessor --> Synthesizer
+        Router -. optional .-> QueryTransformation
+    end
+
+    %% Stage 5: Evaluation
+    subgraph Evaluation["Evaluation"]
+        direction TB
+        Accuracy["Response Quality / Accuracy"]
+        RetrievalQuality["Retrieval Quality"]
+        Faithfulness["Faithfulness"]
+        Speed["Latency / Response Speed"]
+        Cost["Cost / Token Usage"]
+    end
+
+    %% Cross-cutting concerns
+    subgraph Observability["Observability and Debugging"]
+        direction TB
+        Logging["Logging"]
+        Tracing["Callbacks / Tracing"]
+        Monitoring["Monitoring / Inspection"]
+        Logging --> Tracing --> Monitoring
+    end
+
+    %% User and LLM
+    User(("User"))
+    LLM["LLM"]
+
+    %% Main Flow Connections
+    DataSources -->|"ingest"| PreProcessing
+    PreProcessing -->|"clean docs"| Loading
+    Loading -->|"embed & index"| Indexing
+    Indexing -->|"persist"| Storing
+    Storing -->|"load & retrieve"| Querying
+    Querying -->|"measure"| Evaluation
+
+    %% User query flow
+    User -->|"query"| QueryEngine
+    Synthesizer -->|"prompt + query + relevant data"| LLM
+    LLM -->|"response"| User
+
+    %% Feedback loop from Evaluation to all stages
+    Evaluation -.->|"improve"| PreProcessing
+    Evaluation -.->|"improve"| Loading
+    Evaluation -.->|"improve"| Indexing
+    Evaluation -.->|"improve"| Storing
+    Evaluation -.->|"improve"| Querying
+
+    %% Cross-cutting visibility
+    Observability -.-> Loading
+    Observability -.-> Indexing
+    Observability -.-> Storing
+    Observability -.-> Querying
+    Observability -.-> Evaluation
