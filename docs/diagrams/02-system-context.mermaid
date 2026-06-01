@@ -1,0 +1,36 @@
+%% System Context Diagram (C4 Level 1) — Agentic RAG Ecommerce
+%% Shows the system and all external actors and dependencies
+%% Reference: docs/analysis/02-REQUIREMENTS-SPECIFICATION.md
+
+C4Context
+    title System Context - Agentic RAG Ecommerce (AI POD Stylist)
+
+    Person(customer, "Customer", "End user chatting to get POD product recommendations, design trend info, and on-demand generated design images")
+    Person(admin, "System Administrator", "Manages product catalog reindex, monitors system health, and accesses user profiles (is_staff: true)")
+
+    System(system, "Agentic RAG Ecommerce", "AI POD Stylist. Multi-agent LangGraph workflow wrapped by FastAPI. Thread-based chat with SSE streaming. Handles product RAG, trend search, image generation, user profiling, Saleor webhook sync, and async Celery tasks.")
+
+    System_Ext(saleor, "Saleor", "Open-source e-commerce platform. Product catalog source via GraphQL API. Sends HMAC-signed product lifecycle webhooks. Provides JWT tokens for customer authentication (JWKS/RS256).")
+    System_Ext(openai, "OpenAI API", "LLM inference (RESPONSE_MODEL, ORCHESTRATOR_MODEL, TITLE_MODEL), text embeddings (EMBEDDING_MODEL), and DALL-E image generation.")
+    System_Ext(tavily, "Tavily Search API", "Primary web search for real-time design trend data. DuckDuckGo used as fallback.")
+    System_Ext(langsmith, "LangSmith", "LLM/agent observability. Captures LangGraph traces and LlamaIndex OTel spans. Configurable via LANGCHAIN_TRACING_V2.")
+    SystemDb_Ext(qdrant, "Qdrant Vector DB", "Product vector storage. Hybrid dense + sparse BM25 search with metadata filtering. Payload includes thumbnail_url.")
+    SystemDb_Ext(postgres, "PostgreSQL 16", "LangGraph checkpointer (AgentState + all messages), LangGraph Store (user profiles), custom tables: threads, generated_images.")
+    SystemDb_Ext(valkey, "Valkey", "Redis-compatible. DB/0: SlowAPI rate limiting. DB/1: fastapi-cache2 thread list cache.")
+    System_Ext(s3, "AWS S3", "Object storage for generated design images. Public URLs. Thread-based lifecycle (30-day inactivity cleanup).")
+    System_Ext(rabbitmq, "RabbitMQ + Celery", "Async task processing: webhook sync, product reindex, expired thread cleanup (Celery Beat). Image generation is inline, not via Celery.")
+
+    Rel(customer, system, "Chat message / SSE stream response", "HTTPS Bearer JWT")
+    Rel(admin, system, "Reindex trigger / health check / profile access", "HTTPS Bearer JWT (is_staff)")
+    Rel(saleor, system, "Product lifecycle webhook events (HMAC-SHA256)", "HTTPS Webhook")
+    Rel(system, saleor, "Paginated product catalog fetch / JWKS fetch", "GraphQL + JWKS / HTTPS")
+    Rel(system, openai, "LLM inference, embeddings, DALL-E image generation", "HTTPS")
+    Rel(system, tavily, "Web search for design trends", "HTTPS")
+    Rel(system, langsmith, "LangGraph + LlamaIndex trace data (OTel)", "HTTPS")
+    Rel(system, qdrant, "Vector upsert / hybrid search / delete", "gRPC / HTTP")
+    Rel(system, postgres, "Checkpointer state, Store profiles, thread metadata, image records", "TCP asyncpg")
+    Rel(system, valkey, "Rate limit counters / response cache / image quota", "TCP")
+    Rel(system, s3, "Generated image upload / public URL serve", "HTTPS")
+    Rel(system, rabbitmq, "Enqueue async tasks (webhook, reindex, cleanup)", "AMQP")
+
+    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")

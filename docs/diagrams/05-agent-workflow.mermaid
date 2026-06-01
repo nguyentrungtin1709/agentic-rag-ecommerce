@@ -1,0 +1,45 @@
+%% Agent Workflow — LangGraph State Machine
+%% Multi-agent workflow compiled with AsyncPostgresSaver (checkpointer) + AsyncPostgresStore (store)
+%% Node patterns: sub-graph | ReAct agent | plain Python function
+%%
+%% AgentState fields:
+%%   messages: list[BaseMessage]     -- all conversation messages (managed by checkpointer)
+%%   user_profile: dict              -- extracted customer attributes
+%%   retrieved_products: list[...]   -- Qdrant search results
+%%   trend_summary: str | None       -- web-sourced trend report + text-to-image prompts
+%%   thread_title: str | None        -- auto-generated or fallback-truncated title
+%%   correlation_id: str             -- per-request traceability ID
+%%
+%% Reference: docs/analysis/02-REQUIREMENTS-SPECIFICATION.md (Section FR-055 to FR-067)
+
+flowchart TD
+    START([START])
+    Profiler["Profiler Node\n(plain function)\nMerge profile from current_profile_json\n+ latest_message only (ORCHESTRATOR_MODEL)\nStore.aput to AsyncPostgresStore"]
+    Orch["Orchestrator Node\n(plain function / ReAct)\nClassify intent using ORCHESTRATOR_MODEL\nCheck remaining_steps vs AGENT_FALLBACK_THRESHOLD\nIntents: sufficient | clarification_needed\n| out_of_scope | fallback"]
+    RAG["Product RAG Agent\n(LangGraph sub-graph or ReAct)\nQuery rewrite (English) + hybrid search\ndense (EMBEDDING_MODEL) + sparse BM25\n+ metadata filter in Qdrant\nStores: retrieved_products in AgentState"]
+    Trend["Trend Scout Node\n(ReAct agent with Tavily tool)\nTavily web search (DuckDuckGo fallback)\nSummarize trends + generate text-to-image prompts\nStores: trend_summary in AgentState"]
+    ResGen["Response Generator Node\n(plain function with streaming)\nSynthesizes: user_profile + retrieved_products\n+ trend_summary -> RESPONSE_MODEL\nSSE events: token / products / done / error\n(interleaved block model)"]
+    TitleGen["TitleGenerationNode\n(parallel branch, first run only)\nCondition: title_generated == false\nUses: TITLE_MODEL (max 6 words)\nRetries: up to TITLE_GENERATION_MAX_ATTEMPTS\nFallback: truncate first_message to TITLE_TRUNCATION_LENGTH\nEmits SSE: thread_title\nUpdates: threads table"]
+    ImgGen["ImageGenerationNode\n(parallel branch, inline -- NOT Celery)\nCondition: generate_image == true\n+ design context available\nCheck image_quota in Valkey\nDALL-E via RESPONSE_MODEL provider\nUpload to S3\nInsert generated_images with request_message_id\nEmits SSE: image_ready | image_failed"]
+    Checkpointer["AsyncPostgresSaver\n(automatic checkpoint after every node)\nSaves full AgentState + all messages\nper thread per checkpoint"]
+    END([END])
+
+    START --> TitleGen
+    START --> Profiler
+
+    TitleGen --> |"title SSE emitted (or failed + retry scheduled)"| END
+
+    Profiler --> Orch
+
+    Orch --> |"intent: sufficient\nor clarification_needed\nor out_of_scope"| ResGen
+    Orch --> |"intent: fallback\n(remaining_steps <= AGENT_FALLBACK_THRESHOLD)"| ResGen
+    Orch --> |"intent: need product search"| RAG
+    Orch --> |"intent: need trend info"| Trend
+
+    RAG --> |"retrieved_products set in AgentState"| Orch
+    Trend --> |"trend_summary set in AgentState"| Orch
+
+    ResGen --> ImgGen
+    ResGen --> Checkpointer
+    ImgGen --> |"SSE image_ready or image_failed"| Checkpointer
+    Checkpointer --> END

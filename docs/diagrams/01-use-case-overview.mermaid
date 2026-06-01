@@ -1,0 +1,36 @@
+%% Use Case Overview — Agentic RAG Ecommerce
+%% Actors: Customer (A-01), System Administrator (A-02), Saleor (A-03)
+%% Reference: docs/analysis/01-USE-CASE-ANALYSIS.md
+
+flowchart LR
+    Customer["Customer (A-01)"]
+    Admin["System Administrator (A-02)"]
+    Saleor["Saleor (A-03)"]
+
+    subgraph sys ["Agentic RAG Ecommerce System"]
+        UC001["UC-001 Request Product Recommendations"]
+        UC002["UC-002 Request Design Trend Info"]
+        UC003["UC-003 Request Combined Suggestion"]
+        UC004["UC-004 Multi-Turn Conversation"]
+        UC005["UC-005 View Thread History"]
+        UC006["UC-006 Delete Thread"]
+        UC007["UC-007 View Customer Profile"]
+        UC008["UC-008 Trigger Full Reindex"]
+        UC009["UC-009 Sync Product on Create"]
+        UC010["UC-010 Sync Product on Update"]
+        UC011["UC-011 Sync Product on Delete"]
+    end
+
+    Customer --> UC001
+    Customer --> UC002
+    Customer --> UC003
+    Customer --> UC004
+    Customer --> UC005
+    Customer --> UC006
+    Admin --> UC007
+    Admin --> UC008
+    Saleor --> UC009
+    Saleor --> UC010
+    Saleor --> UC011
+    UC003 -. extends .-> UC001
+    UC003 -. extends .-> UC002

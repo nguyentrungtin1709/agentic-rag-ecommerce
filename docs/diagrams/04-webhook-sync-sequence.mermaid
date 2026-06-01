@@ -1,0 +1,60 @@
+%% Saleor Webhook Product Sync — Sequence Diagram
+%% Covers UC-009 (Sync on Create), UC-010 (Sync on Update), UC-011 (Sync on Delete)
+%% Webhook handler returns 200 immediately; Celery worker processes async
+%% Reference: docs/analysis/01-USE-CASE-ANALYSIS.md
+
+sequenceDiagram
+    actor Saleor
+    participant API as FastAPI (Webhook)
+    participant HMAC as HMAC Validator
+    participant MQ as RabbitMQ
+    participant Worker as Celery Worker
+    participant EmbSvc as Embedding Service
+    participant QSvc as Qdrant Service
+    participant OpenAI as OpenAI API
+    participant Qdrant as Qdrant
+    participant Logger as Structured Logger (structlog)
+
+    Saleor->>API: POST /webhooks/saleor
+    Note over Saleor,API: Headers: X-Saleor-Signature: {hmac}<br/>Body: {event_type, product: {...}}
+
+    API->>HMAC: Validate HMAC-SHA256 signature
+    Note over API,HMAC: constant-time comparison(HMAC-SHA256(body, SALEOR_WEBHOOK_SECRET), header_value)
+
+    alt Invalid HMAC signature
+        HMAC-->>API: Signature mismatch
+        API->>Logger: Log WARN - invalid webhook signature (no payload logged)
+        API-->>Saleor: 401 Unauthorized
+    else Valid HMAC signature
+        HMAC-->>API: Signature valid
+        API->>MQ: Enqueue process_webhook task (queue: webhook)
+        MQ-->>API: Task enqueued
+        API-->>Saleor: 200 OK (immediate response)
+
+        Note over MQ, Worker: Async processing — Saleor has already received 200 OK
+
+        MQ->>Worker: Deliver process_webhook task
+        Worker->>Worker: Parse webhook payload (event_type, product_id, product_data)
+
+        alt PRODUCT_CREATED or PRODUCT_UPDATED
+            Worker->>EmbSvc: Generate embedding for product
+            EmbSvc->>OpenAI: EMBEDDING_MODEL (name + description concatenated)
+            OpenAI-->>EmbSvc: Vector [float, ...]
+            EmbSvc-->>Worker: Product vector
+
+            Worker->>QSvc: Upsert point (id, vector, metadata incl. thumbnail_url)
+            QSvc->>Qdrant: upsert_points (overwrites existing if same product_id)
+            Qdrant-->>QSvc: OK
+            QSvc-->>Worker: Upsert successful
+
+            Worker->>Logger: Log INFO - product synced (product_id, event_type, duration_ms)
+
+        else PRODUCT_DELETED
+            Worker->>QSvc: Delete point by product_id
+            QSvc->>Qdrant: delete_points (ids=[product_id])
+            Qdrant-->>QSvc: OK
+            QSvc-->>Worker: Delete successful
+
+            Worker->>Logger: Log INFO - product deleted from index (product_id)
+        end
+    end

@@ -19,7 +19,7 @@
 ## 2. Main Features
 
 ### User Profiler & Memory Manager
-Automatically analyzes conversation history to extract customer information (age, style, print preferences), stores short-term chat sessions in **Redis**, and persists long-term customer profiles in **PostgreSQL**.
+Automatically analyzes conversation history to extract customer information (age, style, print preferences), stores short-term chat sessions and persists long-term customer profiles in **PostgreSQL**.
 
 ### Product Agentic RAG Engine
 Uses **LlamaIndex** to connect and index the product catalog pulled from the **Saleor GraphQL API** into **Qdrant Vector DB**. Performs **Hybrid Search** combining Semantic Search and Metadata Filtering to find the most contextually relevant product blanks (t-shirts, mugs, canvases).
@@ -44,7 +44,7 @@ Supports streaming responses via **Server-Sent Events (SSE)** through FastAPI, e
 | Data Layer & RAG | LlamaIndex (Hierarchical Node Parsing & Object Retrievers) |
 | Vector Database | Qdrant |
 | Relational Database | PostgreSQL |
-| Session Cache / Short-term Memory | Redis |
+| Session Cache / Short-term Memory | PostgreSQL |
 | E-Commerce System | Saleor Core (Open-source via GraphQL API) |
 | DevOps | Docker, Docker Compose |
 

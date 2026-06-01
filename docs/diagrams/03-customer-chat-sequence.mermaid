@@ -1,0 +1,125 @@
+%% Customer Chat Interaction — Main Flow Sequence Diagram
+%% Covers UC-001 (product recommendations), UC-002 (trend info), UC-003 (combined)
+%% Includes: JWT auth, TitleGenerationNode (first run, parallel), Image Generation (parallel)
+%% Reference: docs/analysis/01-USE-CASE-ANALYSIS.md
+
+sequenceDiagram
+    actor Customer
+    participant API as FastAPI
+    participant Auth as JWT Verifier (JWKS cache)
+    participant PG as PostgreSQL
+    participant LG as LangGraph
+    participant TitleGen as TitleGenerationNode
+    participant Profiler as Profiler Node
+    participant Orch as Orchestrator Node
+    participant RAG as Product RAG Agent
+    participant Trend as Trend Scout Node
+    participant ImgGen as Image Gen Node
+    participant ResGen as Response Generator
+    participant Qdrant as Qdrant
+    participant OpenAI as OpenAI API
+    participant Tavily as Tavily Search
+    participant S3 as AWS S3
+    participant Valkey as Valkey
+
+    Customer->>API: POST /api/v1/threads/{thread_id}/runs/stream
+    Note over Customer,API: Authorization: Bearer {saleor_jwt}<br/>Body: {message, generate_image: bool}
+
+    API->>Auth: Verify RS256 JWT (cached JWKS, no network call)
+    Auth-->>API: {user_id, is_staff, type="access"}
+
+    API->>PG: Check threads.status WHERE thread_id = ?
+    PG-->>API: status = "idle"
+    API->>PG: UPDATE threads SET status = "busy", last_activity_at = now()
+
+    API->>LG: Invoke graph(AgentState, config={thread_id})
+    LG->>PG: Load latest AgentState from checkpointer
+
+    opt title_generated == false (first run only, parallel branch)
+        rect rgb(255, 250, 220)
+            Note over LG, TitleGen: TitleGenerationNode
+            LG->>TitleGen: Execute (first_user_message only)
+            TitleGen->>OpenAI: Generate title (TITLE_MODEL, max 6 words)
+            OpenAI-->>TitleGen: title text
+            TitleGen->>PG: UPDATE threads SET title=?, title_generated=true
+            TitleGen-->>API: Emit SSE thread_title
+            API-->>Customer: event: thread_title {"title": "..."}
+        end
+    end
+
+    rect rgb(230, 245, 255)
+        Note over LG, Profiler: Profiler Node
+        LG->>Profiler: Execute
+        Profiler->>OpenAI: Merge profile (ORCHESTRATOR_MODEL, current_profile_json + latest_message only)
+        OpenAI-->>Profiler: updated_profile
+        Profiler->>PG: Store.aput(namespace=profiles/user_id, updated_profile)
+    end
+
+    rect rgb(255, 245, 230)
+        Note over LG, Orch: Orchestrator Node
+        Profiler->>Orch: Pass updated AgentState
+        Orch->>Orch: Check remaining_steps vs AGENT_FALLBACK_THRESHOLD
+        Orch->>OpenAI: Classify intent (ORCHESTRATOR_MODEL)
+        OpenAI-->>Orch: intent = sufficient | clarification_needed | out_of_scope | fallback
+    end
+
+    alt intent requires product search
+        rect rgb(230, 255, 230)
+            Note over LG, RAG: Product RAG Agent
+            Orch->>RAG: Route to Product RAG
+            RAG->>OpenAI: Rewrite query to English (ORCHESTRATOR_MODEL)
+            OpenAI-->>RAG: optimized_query
+            RAG->>Qdrant: Hybrid search (dense + BM25 + metadata filter)
+            Qdrant-->>RAG: top-k products with thumbnail_url
+            RAG->>Orch: Return with retrieved_products in AgentState
+        end
+        rect rgb(255, 245, 230)
+            Note over LG, Orch: Orchestrator re-evaluates
+            Orch->>OpenAI: Re-evaluate (ORCHESTRATOR_MODEL)
+            OpenAI-->>Orch: intent = sufficient
+        end
+    else intent requires trend search
+        rect rgb(255, 230, 230)
+            Note over LG, Trend: Trend Scout Node
+            Orch->>Trend: Route to Trend Scout
+            Trend->>Tavily: Web search for design trends
+            Tavily-->>Trend: Search results
+            Trend->>OpenAI: Summarize trends + generate prompts (ORCHESTRATOR_MODEL)
+            OpenAI-->>Trend: trend_summary (themes + text-to-image prompts)
+            Trend->>Orch: Return with trend_summary in AgentState
+        end
+    end
+
+    rect rgb(245, 230, 255)
+        Note over LG, ResGen: Response Generator Node
+        Orch->>ResGen: Route (intent: sufficient | clarification_needed | out_of_scope | fallback)
+        ResGen->>OpenAI: Synthesize response (RESPONSE_MODEL)
+        OpenAI-->>ResGen: Streaming tokens
+        loop SSE token stream
+            ResGen-->>API: token event
+            API-->>Customer: event: token {"content": "..."}
+        end
+        ResGen-->>API: products event (if retrieved_products available)
+        API-->>Customer: event: products {"items": [...]}
+    end
+
+    opt generate_image == true AND trigger conditions met
+        rect rgb(230, 255, 255)
+            Note over LG, ImgGen: Image Generation Node (parallel with Response Gen)
+            LG->>Valkey: Check image_quota:{user_id}:{date} (DB/0)
+            Valkey-->>LG: quota OK
+            LG->>ImgGen: Execute
+            ImgGen->>OpenAI: Generate image (DALL-E) from synthesized prompt
+            OpenAI-->>ImgGen: image bytes
+            ImgGen->>S3: Upload image (images/{user_id}/{thread_id}/{ts}.png)
+            S3-->>ImgGen: public_url
+            ImgGen->>PG: INSERT generated_images(request_message_id=HumanMessage.id, s3_url, ...)
+            ImgGen-->>API: Emit SSE: image_ready {"url": "...", "prompt": "..."}
+            API-->>Customer: event: image_ready
+        end
+    end
+
+    LG->>PG: AsyncPostgresSaver auto-saves full AgentState (all messages)
+    API->>PG: UPDATE threads SET status = "idle"
+
+    API-->>Customer: event: done {"run_id", "thread_id", "intent", "usage": {...}}
