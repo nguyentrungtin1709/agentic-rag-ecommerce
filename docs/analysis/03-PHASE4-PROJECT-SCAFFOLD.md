@@ -324,7 +324,7 @@ All versions are pinned to the exact latest stable release. Update only after te
 | Package | Version | Purpose |
 |---|---|---|
 | `redis` | `8.0.0` | Redis/Valkey client (rate limiting + response cache) |
-| `celery[redis]` | `5.6.3` | Async task queue; `[redis]` adds result backend |
+| `celery` | `5.6.3` | Async task queue (redis transport via `redis==8.0.0` in deps) |
 | `aiohttp` | `3.14.0` | Celery async transport dependency |
 
 #### Runtime — Storage / Search
@@ -423,7 +423,7 @@ dependencies = [
     "alembic==1.18.4",
     # Cache / Tasks
     "redis==8.0.0",
-    "celery[redis]==5.6.3",
+    "celery==5.6.3",
     "aiohttp==3.14.0",
     # Storage / Search
     "boto3==1.43.19",

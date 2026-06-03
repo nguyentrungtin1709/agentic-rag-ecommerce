@@ -1,0 +1,214 @@
+services:
+  # ── Application ────────────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    container_name: agentic-rag-app
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: .env
+    ports:
+      - "8000:8000"
+    networks:
+      - agentic-rag
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      valkey:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: always
+    logging:
+      driver: local
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ── Celery Worker ──────────────────────────────────────────────────────────
+  celery-worker:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    container_name: agentic-rag-celery-worker
+    command: ["celery", "-A", "app.tasks.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+    env_file: .env
+    networks:
+      - agentic-rag
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    restart: always
+    logging:
+      driver: local
+
+  # ── Celery Beat ────────────────────────────────────────────────────────────
+  celery-beat:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    container_name: agentic-rag-celery-beat
+    command: ["celery", "-A", "app.tasks.celery_app", "beat", "--loglevel=info"]
+    env_file: .env
+    networks:
+      - agentic-rag
+    depends_on:
+      - celery-worker
+    restart: always
+    logging:
+      driver: local
+
+  # ── PostgreSQL 16 ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16.4-alpine
+    container_name: agentic-rag-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - agentic-rag
+    restart: always
+    logging:
+      driver: local
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Qdrant ─────────────────────────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:v1.13.0
+    container_name: agentic-rag-qdrant
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "6333:6333"
+    networks:
+      - agentic-rag
+    restart: always
+    logging:
+      driver: local
+
+  # ── Valkey (Redis-compatible) ──────────────────────────────────────────────
+  valkey:
+    image: valkey/valkey:9.1.0-alpine
+    container_name: agentic-rag-valkey
+    volumes:
+      - valkey_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - agentic-rag
+    restart: always
+    logging:
+      driver: local
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── RabbitMQ ───────────────────────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:4.1.0-management-alpine
+    container_name: agentic-rag-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - agentic-rag
+    restart: always
+    logging:
+      driver: local
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Grafana ────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.6.0
+    container_name: agentic-rag-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/datasources:/etc/grafana/provisioning/datasources
+      - ./docker/grafana/dashboards:/etc/grafana/provisioning/dashboards
+    ports:
+      - "3000:3000"
+    networks:
+      - agentic-rag
+    depends_on:
+      - loki
+    restart: always
+    logging:
+      driver: local
+
+  # ── Loki ───────────────────────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:3.5.0
+    container_name: agentic-rag-loki
+    command: -config.file=/etc/loki/local-config.yaml
+    ports:
+      - "3100:3100"
+    networks:
+      - agentic-rag
+    restart: always
+    logging:
+      driver: local
+
+  # ── Promtail ───────────────────────────────────────────────────────────────
+  promtail:
+    image: grafana/promtail:3.5.0
+    container_name: agentic-rag-promtail
+    volumes:
+      - /var/log:/var/log:ro
+      - ./docker/promtail/config.yaml:/etc/promtail/config.yaml
+    command: -config.file=/etc/promtail/config.yaml
+    networks:
+      - agentic-rag
+    depends_on:
+      - loki
+    restart: always
+    logging:
+      driver: local
+
+networks:
+  agentic-rag:
+    name: agentic-rag
+    driver: bridge
+
+volumes:
+  postgres_data:
+    name: agentic-rag-postgres-data
+  qdrant_data:
+    name: agentic-rag-qdrant-data
+  valkey_data:
+    name: agentic-rag-valkey-data
+  rabbitmq_data:
+    name: agentic-rag-rabbitmq-data
+  grafana_data:
+    name: agentic-rag-grafana-data

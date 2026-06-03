@@ -1,0 +1,77 @@
+"""Saleor JWT verifier using RS256 + JWKS.
+
+Fetches the public JWKS from Saleor's ``/.well-known/jwks.json`` endpoint
+and caches the result with a configurable TTL.  Incoming tokens are
+decoded and verified locally using PyJWT — no round-trip to Saleor per
+request.
+
+Typical usage inside a FastAPI dependency:
+
+    from app.auth.jwt_verifier import verify_token
+
+    async def current_user(token: str = Depends(bearer_token)) -> dict:
+        return await verify_token(token)
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import jwt
+import structlog
+
+logger = structlog.get_logger(__name__)
+
+# Cache one PyJWKClient per Saleor base URL so JWKS is not re-fetched on
+# every request.  PyJWKClient handles its own in-memory key caching.
+_jwks_clients: dict[str, jwt.PyJWKClient] = {}
+
+
+def _get_jwks_client(saleor_url: str) -> jwt.PyJWKClient:
+    """Return or create a cached PyJWKClient for the given Saleor instance.
+
+    Args:
+        saleor_url: Base URL of the Saleor instance.
+
+    Returns:
+        A ``jwt.PyJWKClient`` configured to fetch from the JWKS endpoint.
+    """
+    if saleor_url not in _jwks_clients:
+        jwks_url = f"{saleor_url}/.well-known/jwks.json"
+        _jwks_clients[saleor_url] = jwt.PyJWKClient(
+            jwks_url,
+            cache_keys=True,
+            lifespan=3600,
+        )
+        logger.info("PyJWKClient created", saleor_url=saleor_url)
+    return _jwks_clients[saleor_url]
+
+
+async def verify_token(token: str, saleor_url: str) -> dict[str, Any]:
+    """Verify a Saleor-issued JWT and return its decoded claims.
+
+    The JWKS is fetched lazily on first call and cached by PyJWKClient.
+    Key rotation is handled automatically when a new ``kid`` is seen.
+
+    Args:
+        token: Raw JWT string (without ``Bearer `` prefix).
+        saleor_url: Base URL of the Saleor instance used as issuer.
+
+    Returns:
+        Decoded JWT payload as a dict.
+
+    Raises:
+        jwt.PyJWTError: On any verification failure (expired, invalid
+            signature, wrong issuer, etc.).
+    """
+    jwks_client = _get_jwks_client(saleor_url)
+    signing_key = jwks_client.get_signing_key_from_jwt(token)
+
+    payload: dict[str, Any] = jwt.decode(
+        token,
+        signing_key.key,
+        algorithms=["RS256"],
+        options={"require": ["exp", "iat", "sub", "iss"]},
+        issuer=saleor_url,
+    )
+    return payload

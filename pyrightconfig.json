@@ -1,0 +1,9 @@
+{
+  "pythonVersion": "3.12",
+  "pythonPlatform": "Linux",
+  "typeCheckingMode": "standard",
+  "include": ["src", "tests"],
+  "exclude": ["**/__pycache__", ".venv"],
+  "venvPath": ".",
+  "venv": ".venv"
+}

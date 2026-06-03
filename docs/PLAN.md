@@ -167,7 +167,7 @@
 
 **Tasks:**
 - Configure `structlog` JSON logging with standard fields (`timestamp`, `level`, `service`, `correlation_id`, `thread_id`, `user_id`, `node`)
-- Enable LangSmith tracing via `LANGCHAIN_TRACING_V2=true`
+- Enable LangSmith tracing via `LANGSMITH_TRACING=true`
 - Wire LlamaIndex → OTel → LangSmith via `openinference-instrumentation-llama-index`
 - Expose Prometheus metrics via `prometheus-fastapi-instrumentator`
 - Configure Promtail → Loki log shipping
