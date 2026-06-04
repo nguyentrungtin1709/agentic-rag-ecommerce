@@ -5,10 +5,10 @@ services:
       context: .
       dockerfile: docker/app/Dockerfile
     container_name: agentic-rag-app
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
     env_file: .env
     ports:
-      - "8000:8000"
+      - "8080:8080"
     networks:
       - agentic-rag
     depends_on:
