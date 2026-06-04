@@ -151,7 +151,28 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
+  # ── Prometheus ────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v3.4.0
+    container_name: agentic-rag-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - agentic-rag
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: always
+    logging:
+      driver: local
   # ── Grafana ────────────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:11.6.0
@@ -216,5 +237,7 @@ volumes:
     name: agentic-rag-valkey-data
   rabbitmq_data:
     name: agentic-rag-rabbitmq-data
+  prometheus_data:
+    name: agentic-rag-prometheus-data
   grafana_data:
     name: agentic-rag-grafana-data
