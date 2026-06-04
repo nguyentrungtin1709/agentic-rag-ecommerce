@@ -104,6 +104,13 @@ Dockerfile*     text eol=lf
 # *.onnx    filter=lfs diff=lfs merge=lfs -text
 
 # =============================================================================
+# Terraform
+# =============================================================================
+*.tf        text eol=lf
+*.tfvars    text eol=lf
+*.hcl       text eol=lf
+
+# =============================================================================
 # Diff Drivers — improve readability of diffs for specific file types
 # =============================================================================
 *.py        diff=python

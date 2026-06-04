@@ -194,6 +194,37 @@ docs/site/
 site/
 
 # =============================================================================
+# Terraform
+# =============================================================================
+# Local state — always use remote backend
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Plan output files
+*.tfplan
+*.tfplan.json
+
+# Local .terraform directory (provider plugins, modules cache)
+**/.terraform/
+
+# Crash log
+crash.log
+crash.*.log
+
+# Override files — local overrides should not be committed
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Backend and environment variable files with real values
+# Keep *.example.tfvars and backend.example.tfvars in Git
+terraform/environments/*.tfvars
+!terraform/environments/.gitkeep
+terraform/environments/backend-*.tfvars
+
+# =============================================================================
 # Temporary & Misc
 # =============================================================================
 *.tmp
