@@ -61,7 +61,7 @@ venv.bak/
 
 # uv
 .uv/
-uv.lock
+# uv.lock should be committed — it pins exact dependency versions (like package-lock.json)
 
 # pipenv
 Pipfile.lock
@@ -218,11 +218,9 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 
-# Backend and environment variable files with real values
-# Keep *.example.tfvars and backend.example.tfvars in Git
-terraform/environments/*.tfvars
-!terraform/environments/.gitkeep
-terraform/environments/backend-*.tfvars
+# All .tfvars files must never be committed — only *.example.tfvars are allowed
+*.tfvars
+!*.example.tfvars
 
 # =============================================================================
 # Temporary & Misc
