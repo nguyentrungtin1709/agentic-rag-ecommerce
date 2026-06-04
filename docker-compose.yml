@@ -7,6 +7,8 @@ services:
     container_name: agentic-rag-app
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
     env_file: .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8080:8080"
     networks:
@@ -24,7 +26,7 @@ services:
     logging:
       driver: local
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -38,6 +40,8 @@ services:
     container_name: agentic-rag-celery-worker
     command: ["celery", "-A", "app.tasks.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
     env_file: .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - agentic-rag
     depends_on:
@@ -59,6 +63,8 @@ services:
     container_name: agentic-rag-celery-beat
     command: ["celery", "-A", "app.tasks.celery_app", "beat", "--loglevel=info"]
     env_file: .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - agentic-rag
     depends_on:
@@ -78,7 +84,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "5433:5432"
     networks:
       - agentic-rag
     restart: always
@@ -111,7 +117,7 @@ services:
     volumes:
       - valkey_data:/data
     ports:
-      - "6379:6379"
+      - "6380:6379"
     networks:
       - agentic-rag
     restart: always

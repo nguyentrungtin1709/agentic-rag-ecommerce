@@ -43,7 +43,7 @@ async def open_pools(database_url: str) -> None:
         min_size=2,
         max_size=10,
         open=False,
-        kwargs={"row_factory": dict_row},
+        kwargs={"row_factory": dict_row, "autocommit": True},
     )
     await _psycopg_pool.open()
 
