@@ -75,7 +75,7 @@ def test_health_degraded_when_valkey_fails() -> None:
         patch("app.api.health.get_asyncpg_pool", return_value=_mock_pg_pool(True)),
         TestClient(app, raise_server_exceptions=False) as client,
     ):
-        response = client.get("/health")
+        response = client.get("/ready")
 
     assert response.status_code == 503
     body = response.json()
@@ -92,7 +92,7 @@ def test_health_degraded_when_qdrant_fails() -> None:
         patch("app.api.health.get_asyncpg_pool", return_value=_mock_pg_pool(True)),
         TestClient(app, raise_server_exceptions=False) as client,
     ):
-        response = client.get("/health")
+        response = client.get("/ready")
 
     assert response.status_code == 503
     body = response.json()
@@ -109,7 +109,7 @@ def test_health_degraded_when_postgres_fails() -> None:
         patch("app.api.health.get_asyncpg_pool", return_value=_mock_pg_pool(False)),
         TestClient(app, raise_server_exceptions=False) as client,
     ):
-        response = client.get("/health")
+        response = client.get("/ready")
 
     assert response.status_code == 503
     body = response.json()
@@ -126,7 +126,7 @@ def test_health_degraded_when_all_fail() -> None:
         patch("app.api.health.get_asyncpg_pool", return_value=_mock_pg_pool(False)),
         TestClient(app, raise_server_exceptions=False) as client,
     ):
-        response = client.get("/health")
+        response = client.get("/ready")
 
     assert response.status_code == 503
     body = response.json()
@@ -141,7 +141,7 @@ def test_health_ok_when_all_pass() -> None:
         patch("app.api.health.get_asyncpg_pool", return_value=_mock_pg_pool(True)),
         TestClient(app, raise_server_exceptions=False) as client,
     ):
-        response = client.get("/health")
+        response = client.get("/ready")
 
     assert response.status_code == 200
     body = response.json()

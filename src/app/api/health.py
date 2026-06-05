@@ -1,7 +1,15 @@
-"""Health-check endpoint.
+"""Health-check endpoints.
 
-Returns the status of all critical infrastructure dependencies.  Used by
-Docker health-checks, load-balancer probes, and Grafana dashboards.
+Two probes are provided as per FR-105 and FR-106:
+
+- ``GET /health``  — Liveness probe.  Returns 200 as long as the process
+  is running.  No external dependency checks are performed.  Used by
+  Docker / Kubernetes to decide whether to restart the container.
+
+- ``GET /ready``   — Readiness probe.  Checks PostgreSQL, Qdrant, and
+  Valkey connectivity before returning 200.  Returns 503 when any
+  dependency is unreachable.  Used by load balancers and Docker
+  Compose ``condition: service_healthy`` to gate downstream services.
 """
 
 from __future__ import annotations
@@ -12,7 +20,7 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 
 from app.db.session import get_asyncpg_pool
-from app.schemas.api import HealthResponse
+from app.schemas.common import HealthResponse
 
 logger = structlog.get_logger(__name__)
 
@@ -21,15 +29,32 @@ router = APIRouter(tags=["health"])
 
 @router.get(
     "/health",
+    summary="Liveness probe",
     response_model=HealthResponse,
-    summary="Infrastructure health check",
 )
-async def health(request: Request) -> JSONResponse:
-    """Check connectivity to PostgreSQL, Qdrant, and Valkey.
+async def health() -> JSONResponse:
+    """Liveness probe — returns 200 when the service process is running.
 
-    Returns 200 when all checks pass, 503 when any check fails.
-    The response body always contains the ``checks`` dict so callers
-    can identify which dependency is down.
+    No external dependency checks are performed.  This endpoint must
+    always return 200 as long as the FastAPI process is alive (FR-105).
+    """
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content=HealthResponse(status="ok").model_dump(),
+    )
+
+
+@router.get(
+    "/ready",
+    summary="Readiness probe",
+    response_model=HealthResponse,
+)
+async def ready(request: Request) -> JSONResponse:
+    """Readiness probe — checks all external infrastructure dependencies.
+
+    Returns 200 when PostgreSQL, Qdrant, and Valkey are all reachable.
+    Returns 503 when any dependency is down, along with a ``checks``
+    dict identifying which service(s) failed (FR-106).
     """
     checks: dict[str, bool] = {}
 
@@ -40,7 +65,7 @@ async def health(request: Request) -> JSONResponse:
             await conn.fetchval("SELECT 1")
         checks["postgres"] = True
     except Exception as exc:
-        logger.warning("Health check: postgres failed", error=str(exc))
+        logger.warning("Readiness check: postgres failed", error=str(exc))
         checks["postgres"] = False
 
     # Qdrant
@@ -49,19 +74,19 @@ async def health(request: Request) -> JSONResponse:
         await qdrant.client.get_collection(qdrant.collection_name)
         checks["qdrant"] = True
     except Exception as exc:
-        logger.warning("Health check: qdrant failed", error=str(exc))
+        logger.warning("Readiness check: qdrant failed", error=str(exc))
         checks["qdrant"] = False
 
     # Valkey
     checks["valkey"] = await request.app.state.valkey.ping()
 
-    all_healthy = all(checks.values())
-    http_status = status.HTTP_200_OK if all_healthy else status.HTTP_503_SERVICE_UNAVAILABLE
+    all_ready = all(checks.values())
+    http_status = status.HTTP_200_OK if all_ready else status.HTTP_503_SERVICE_UNAVAILABLE
 
     return JSONResponse(
         status_code=http_status,
         content=HealthResponse(
-            status="ok" if all_healthy else "degraded",
+            status="ok" if all_ready else "degraded",
             checks=checks,
         ).model_dump(),
     )

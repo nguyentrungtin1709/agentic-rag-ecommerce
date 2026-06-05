@@ -46,8 +46,11 @@ celery_app.conf.update(
     event_queue_exclusive=True,
     # Explicit durable queues — required for RabbitMQ 4.x which disallows
     # transient non-exclusive queues (deprecated_features.transient_nonexcl_queues).
+    # FR-100: dedicated queues for webhook, reindex, and cleanup tasks.
     task_queues=[
         Queue("celery", durable=True),
+        Queue("webhook", durable=True),
+        Queue("reindex", durable=True),
         Queue("cleanup", durable=True),
     ],
     task_default_queue="celery",

@@ -76,7 +76,7 @@ Responses are streamed via **Server-Sent Events** using 7 typed events:
 | Linting / Formatting | `ruff` |
 | Type Checking | `pyright` |
 | Testing | `pytest` + `pytest-asyncio` + `pytest-cov` |
-| Containerization | Docker + Docker Compose (9 services) |
+| Containerization | Docker + Docker Compose (11 services) |
 | CI | GitHub Actions |
 
 ---
@@ -173,7 +173,7 @@ flowchart TD
 
 ## 6. Infrastructure
 
-### Docker Compose Services (9 services)
+### Docker Compose Services (11 services)
 
 | Service | Description |
 |---|---|
@@ -184,5 +184,7 @@ flowchart TD
 | `rabbitmq` | RabbitMQ message broker for Celery |
 | `celery-worker` | Celery worker (webhook, reindex, cleanup queues) |
 | `celery-beat` | Celery Beat scheduler (nightly thread cleanup at 2:00 AM) |
+| `prometheus` | Prometheus metrics collection |
 | `grafana` | Grafana dashboards (Prometheus + Loki data sources) |
-| `loki` + `promtail` | Log aggregation (Promtail scrapes Docker stdout → Loki) |
+| `loki` | Log aggregation backend |
+| `promtail` | Log shipper (scrapes Docker stdout → Loki) |

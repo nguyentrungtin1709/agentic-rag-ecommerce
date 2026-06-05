@@ -45,7 +45,7 @@
 - Qdrant collection schema: hybrid dense + sparse BM25, payload includes `thumbnail_url`
 - Full API contract (13 endpoints)
 - Technology stack confirmed (see Phase 3)
-- Docker Compose service topology (9 services)
+- Docker Compose service topology (11 services)
 - 5 architecture diagrams in `docs/diagrams/`
 
 **Key decisions confirmed:**
@@ -94,7 +94,7 @@
 - Initialize `pyproject.toml`, `uv.lock`, `.env.example`, pre-commit hooks (`ruff`, `pyright`)
 - Set up `config.py` using `pydantic-settings` with all env vars from the registry
 - Define `AgentState` and Pydantic request/response schemas
-- Set up Docker Compose with all 9 services: `app`, `postgres`, `qdrant`, `valkey`, `rabbitmq`, `celery-worker`, `celery-beat`, `grafana`, `loki`+`promtail`
+- Set up Docker Compose with all 11 services: `app`, `postgres`, `qdrant`, `valkey`, `rabbitmq`, `celery-worker`, `celery-beat`, `prometheus`, `grafana`, `loki`, `promtail`
 - Implement health (`GET /health`) and readiness (`GET /ready`) endpoints
 - Implement Saleor GraphQL client (product fetch + JWKS fetch for JWT verification)
 - Implement Qdrant service (collection creation, upsert, delete, hybrid search)

@@ -100,7 +100,7 @@ agentic-rag-ecommerce/
 │       │   │       ├── agent.py       # ReAct agent: search -> summarize -> generate prompts
 │       │   │       └── tools.py       # @tool: tavily_search, duckduckgo_search
 │       │   │
-│       │   └── prompts/               # Externalized LLM prompt templates (Phase 7)
+│       │   └── prompts/               # Externalized LLM prompt templates (Phase 7) — SKIP: deferred, not created yet
 │       │       ├── orchestrator_intent.md
 │       │       ├── profiler_merge.md
 │       │       ├── response_generator.md
@@ -204,8 +204,8 @@ agentic-rag-ecommerce/
 │       └── dashboards/
 │           └── main.json
 │
-├── docker-compose.yml                 # Full 9-service stack
-├── docker-compose.override.yml        # Dev overrides: hot reload, debug ports
+├── docker-compose.yml                 # Full 11-service stack (actual; NOTE: original spec said 9)
+├── docker-compose.override.yml        # Dev overrides: hot reload, debug ports — SKIP: not created
 ├── pyproject.toml                     # uv + dependencies + tool config
 ├── .env.example                       # All required env vars with safe defaults
 ├── .pre-commit-config.yaml            # ruff + pyright hooks
@@ -251,13 +251,18 @@ import only from `models/`. `schemas/` never imports from `agent/` or `tasks/`.
 
 ### agent/nodes/ vs agent/subagents/ — Node Type Classification
 
+> [NOTE] The illustrative names in the original spec (`title_generation.py`,
+> `orchestrator.py`, `response_generator.py`, `image_generation.py`) were updated
+> during Phase 4 implementation.  The table below reflects the **actual file names**
+> in the codebase.  The spec names are kept as comments for traceability.
+
 | File | Type | Pattern | Has tool loop? |
 |---|---|---|---|
-| `nodes/title_generation.py` | Simple node | Plain function | No |
+| `nodes/generate_title.py` | Simple node | Plain function | No | <!-- was: title_generation.py -->
 | `nodes/profiler.py` | Simple node | Plain function | No |
-| `nodes/orchestrator.py` | Simple node | Plain function | No |
-| `nodes/response_generator.py` | Simple node | Plain function + LLM stream | No |
-| `nodes/image_generation.py` | Simple node | Plain function | No |
+| `nodes/orchestrate.py` | Simple node | Plain function | No | <!-- was: orchestrator.py -->
+| `nodes/synthesize.py` | Simple node | Plain function + LLM stream | No | <!-- was: response_generator.py -->
+| `nodes/generate_image.py` | Simple node | Plain function | No | <!-- was: image_generation.py -->
 | `subagents/product_rag/agent.py` | Sub-agent | LangChain ReAct | YES — query rewrite → search → rerank |
 | `subagents/trend_scout/agent.py` | Sub-agent | LangChain ReAct | YES — search → fallback → summarize |
 
@@ -698,8 +703,15 @@ services:
 
 ### 4.4 Dockerfile
 
+> [NOTE — OUTDATED TEMPLATE] The multi-stage template below differs from the
+> **actual** `docker/app/Dockerfile`:
+> - Actual: single stage, `uv` copied from `ghcr.io/astral-sh/uv:latest` (no pinned version).
+> - Actual: exposes port **8080** (not 8000); `ENTRYPOINT` uses a shell script.
+> - Actual: copies `alembic/` and `alembic.ini` into the image.
+> Template is kept for reference only.
+
 ```dockerfile
-# docker/app/Dockerfile
+# docker/app/Dockerfile — TEMPLATE (actual file differs, see above note)
 FROM python:3.12-slim AS builder
 
 WORKDIR /app
@@ -1344,7 +1356,7 @@ Work through tasks in this order. Each task must pass `ruff` + `pyright` before 
 - [ ] Write `docker/app/Dockerfile` (Section 4.4)
 - [ ] Write `docker/promtail/config.yml` — basic Docker log scraping config
 - [ ] Write `docker/grafana/datasources/datasources.yml` — Prometheus + Loki
-- [ ] Verify `docker compose up --build` starts all 9 services without errors
+- [ ] Verify `docker compose up --build` starts all 11 services without errors
 
 ### 13.12 Integration Tests
 
@@ -1361,7 +1373,7 @@ Work through tasks in this order. Each task must pass `ruff` + `pyright` before 
 - [ ] `GET /health` → 200
 - [ ] `GET /ready` → 200
 - [ ] `GET /metrics` → 200 with Prometheus format
-- [ ] `docker compose ps` — all 9 services healthy
+- [ ] `docker compose ps` — all 11 services healthy
 
 ---
 

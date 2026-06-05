@@ -1,8 +1,9 @@
 """Saleor GraphQL client for product catalogue ingestion.
 
 Used by the Celery reindex task to fetch product data from Saleor and
-upsert it into the Qdrant collection.  All communication uses the
-Saleor Storefront API (no authentication required for public products).
+upsert it into the Qdrant collection.  Authentication uses the Saleor
+app token (``SALEOR_APP_TOKEN``) passed as a Bearer token in the
+``Authorization`` header (FR-073).
 """
 
 from __future__ import annotations
@@ -60,10 +61,13 @@ class SaleorClient:
 
     def __init__(self, settings: Settings) -> None:
         graphql_url = f"{settings.saleor_url}/graphql/"
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if settings.saleor_app_token:
+            headers["Authorization"] = f"Bearer {settings.saleor_app_token}"
         self._http = httpx.AsyncClient(
             base_url=graphql_url,
             timeout=30,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
         )
 
     async def fetch_all_products(self, page_size: int = 100) -> list[dict[str, Any]]:

@@ -71,6 +71,32 @@ async def get_current_user(
 CurrentUserDep = Annotated[dict, Depends(get_current_user)]
 
 
+async def get_current_admin(current_user: CurrentUserDep) -> dict:
+    """Require ``is_staff: true`` in the verified JWT claims.
+
+    Used by admin-only endpoints: ``GET /users/{id}/profile``,
+    ``POST /admin/reindex``, ``GET /admin/threads`` (FR-085).
+
+    Args:
+        current_user: Decoded JWT payload from ``get_current_user``.
+
+    Returns:
+        The same JWT payload dict if the user is a staff member.
+
+    Raises:
+        HTTPException: 403 Forbidden if ``is_staff`` is missing or False.
+    """
+    if not current_user.get("is_staff"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required.",
+        )
+    return current_user
+
+
+AdminDep = Annotated[dict, Depends(get_current_admin)]
+
+
 # ── Database pool ────────────────────────────────────────────────────────────
 
 

@@ -236,7 +236,7 @@ priority level: **[MUST]** (MVP), **[SHOULD]** (high value), **[COULD]** (nice t
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-107 | LangGraph and LangChain traces must be automatically sent to LangSmith by setting `LANGCHAIN_TRACING_V2=true`; no additional code instrumentation required | MUST |
+| FR-107 | LangGraph and LangChain traces must be automatically sent to LangSmith by setting `LANGSMITH_TRACING=true`; no additional code instrumentation required <!-- [NOTE] Original spec used `LANGCHAIN_TRACING_V2=true` which is the legacy SDK env var.  The actual implementation uses `LANGSMITH_TRACING` (current LangSmith SDK standard); both are functionally equivalent but `LANGSMITH_TRACING` is the canonical name. --> | MUST |
 | FR-108 | LlamaIndex operations (retrieval, embedding, reranking) inside LangGraph nodes must be bridged to LangSmith via `openinference-instrumentation-llama-index` (OTel spans → LangSmith OTel endpoint) | MUST |
 | FR-109 | The system must expose Prometheus metrics at `GET /metrics` using `prometheus-fastapi-instrumentator` (zero-configuration auto-instrumentation) | MUST |
 | FR-110 | All application logs must use `structlog` with JSON renderer; output to stdout for Docker log capture | MUST |
@@ -368,28 +368,29 @@ async with (
 **Table: `threads`**
 
 ```sql
-CREATE TABLE threads (
-    thread_id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id                    TEXT NOT NULL,           -- Saleor base64 GraphQL Node ID
-    title                      TEXT,                    -- NULL until generated
-    title_generated            BOOLEAN NOT NULL DEFAULT FALSE,
-    title_generation_attempts  INT NOT NULL DEFAULT 0,
-    status                     TEXT NOT NULL DEFAULT 'idle', -- idle | busy | deleting
-    created_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_activity_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+CREATE TABLE IF NOT EXISTS threads (
+    id                        UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id                   TEXT        NOT NULL,
+    title                     TEXT,
+    status                    TEXT        NOT NULL DEFAULT 'idle'
+                                          CHECK (status IN ('idle', 'busy', 'deleting')),
+    title_generated           BOOLEAN     NOT NULL DEFAULT FALSE,
+    title_generation_attempts SMALLINT    NOT NULL DEFAULT 0,
+    created_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_activity_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_threads_user_id ON threads (user_id);
-CREATE INDEX idx_threads_last_activity ON threads (last_activity_at);
+CREATE INDEX IF NOT EXISTS ix_threads_user_id ON threads (user_id);
+CREATE INDEX IF NOT EXISTS ix_threads_last_activity_at ON threads (last_activity_at);
 ```
 
 **Column notes:**
+- `id` is used as the `thread_id` in LangGraph checkpointer config (`{"configurable": {"thread_id": str(id)}}`)
 - `user_id` is `TEXT` (not UUID) — Saleor uses base64 GraphQL Node ID (e.g., `VXNlcjoxMjM=`)
-- `thread_id` is also used as the `thread_id` in LangGraph checkpointer config
 - `title = NULL` + `title_generated = false`: not yet attempted or retries pending
 - `title = "..."` + `title_generated = true`: finalized (LLM success or fallback truncation)
-- `title_generation_attempts`: incremented after each failed attempt; reset not needed after success
+- `title_generation_attempts`: `SMALLINT`; incremented after each failed attempt; reset not needed after success
 
 **Thread status transitions:**
 
@@ -402,29 +403,36 @@ CREATE INDEX idx_threads_last_activity ON threads (last_activity_at);
 **Table: `generated_images`**
 
 ```sql
-CREATE TABLE generated_images (
-    image_id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    thread_id             UUID NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
-    request_message_id    UUID NOT NULL,   -- soft ref: HumanMessage.id of the requesting turn
-    user_id               TEXT NOT NULL,
-    s3_key                TEXT NOT NULL,   -- images/{user_id}/{thread_id}/{timestamp}.png
-    s3_url                TEXT NOT NULL,   -- public S3 URL (permanent until object deleted)
-    prompt_text           TEXT,            -- DALL-E prompt used for generation
-    created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+CREATE TABLE IF NOT EXISTS generated_images (
+    id                 UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    thread_id          UUID        NOT NULL REFERENCES threads (id) ON DELETE CASCADE,
+    user_id            TEXT        NOT NULL,
+    prompt             TEXT        NOT NULL,  -- image generation prompt
+    s3_key             TEXT        NOT NULL,  -- images/{user_id}/{thread_id}/{timestamp}.png
+    s3_url             TEXT        NOT NULL,  -- public S3 URL (permanent until object deleted)
+    model              TEXT        NOT NULL,  -- model used (e.g. dall-e-3)
+    request_message_id TEXT,                  -- soft ref: HumanMessage.id of the requesting turn
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_generated_images_thread_id ON generated_images (thread_id);
-CREATE INDEX idx_generated_images_user_id ON generated_images (user_id);
-CREATE INDEX idx_generated_images_request_message_id ON generated_images (request_message_id);
+CREATE INDEX IF NOT EXISTS ix_generated_images_thread_id
+    ON generated_images (thread_id);
+CREATE INDEX IF NOT EXISTS ix_generated_images_user_id_date
+    ON generated_images (user_id, created_at);
+CREATE INDEX IF NOT EXISTS ix_generated_images_request_message_id
+    ON generated_images (request_message_id);
 ```
 
 **Column notes:**
-- `request_message_id`: soft reference (no FK) — the message exists in the LangGraph
-  checkpointer, not in a custom table; stores the `HumanMessage.id` of the turn that
-  triggered image generation (AIMessage does not exist yet at the time of Image Gen Node execution)
+- `prompt`: full prompt string sent to the image model; `NOT NULL` (always recorded)
+- `model`: name of the image model used (e.g., `dall-e-3`); allows future model attribution
+- `request_message_id`: `TEXT` (nullable), soft reference (no FK) — stores the `HumanMessage.id`
+  of the turn that triggered image generation; nullable because it may not always be available
 - History API maps images to AIMessage turns: `image_map[human_msg.id]` → attached to the
   subsequent AIMessage in the `(HumanMessage, AIMessage)` pair
 - `ON DELETE CASCADE` from `threads` — deleting a thread record deletes image records automatically
+- `ix_generated_images_user_id_date`: composite index on `(user_id, created_at)` to support
+  per-user image history queries ordered by date
 
 ### 4.3 Qdrant Collection Schema (`products`)
 

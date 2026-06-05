@@ -38,7 +38,7 @@ services:
       context: .
       dockerfile: docker/app/Dockerfile
     container_name: agentic-rag-celery-worker
-    command: ["celery", "-A", "app.tasks.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+    command: ["celery", "-A", "app.tasks.celery_app", "worker", "--loglevel=info", "--queues=webhook,reindex,cleanup", "--concurrency=4"]
     env_file: .env
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -138,6 +138,7 @@ services:
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+      - ./docker/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
     ports:
       - "5672:5672"
       - "15672:15672"
