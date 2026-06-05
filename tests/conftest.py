@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -14,7 +15,7 @@ def anyio_backend() -> str:
 
 
 @pytest.fixture
-def settings_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+def settings_overrides(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
     """Override settings with safe test values.
 
     Clears the ``get_settings`` LRU cache before and after each test
@@ -31,7 +32,7 @@ def settings_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def mock_asyncpg_pool() -> MagicMock:
+def mock_asyncpg_pool() -> tuple[MagicMock, AsyncMock]:
     """Return a mock asyncpg pool with a usable acquire context manager."""
     pool = MagicMock()
     conn = AsyncMock()
