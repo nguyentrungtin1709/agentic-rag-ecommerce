@@ -48,7 +48,8 @@ def upgrade() -> None:
             id                        UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
             user_id                   TEXT        NOT NULL,
             title                     TEXT,
-            status                    TEXT        NOT NULL DEFAULT 'idle',
+            status                    TEXT        NOT NULL DEFAULT 'idle'
+                                                  CHECK (status IN ('idle', 'busy', 'deleting')),
             title_generated           BOOLEAN     NOT NULL DEFAULT FALSE,
             title_generation_attempts SMALLINT    NOT NULL DEFAULT 0,
             created_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -69,6 +70,7 @@ def upgrade() -> None:
             thread_id          UUID        NOT NULL REFERENCES threads (id) ON DELETE CASCADE,
             user_id            TEXT        NOT NULL,
             prompt             TEXT        NOT NULL,
+            s3_key             TEXT        NOT NULL,
             s3_url             TEXT        NOT NULL,
             model              TEXT        NOT NULL,
             request_message_id TEXT,
@@ -80,6 +82,9 @@ def upgrade() -> None:
 
         CREATE INDEX IF NOT EXISTS ix_generated_images_user_id_date
             ON generated_images (user_id, created_at);
+
+        CREATE INDEX IF NOT EXISTS ix_generated_images_request_message_id
+            ON generated_images (request_message_id);
     """)
 
 

@@ -83,11 +83,11 @@ agentic-rag-ecommerce/
 │       │   │
 │       │   ├── nodes/                 # Simple nodes — plain Python functions, no tool loop
 │       │   │   ├── __init__.py
-│       │   │   ├── title_generation.py  # LLM call + retry + SSE thread_title
+│       │   │   ├── generate_title.py    # LLM call + retry + SSE thread_title
 │       │   │   ├── profiler.py          # LLM call: profile merge from snapshot + message
-│       │   │   ├── orchestrator.py      # 4-intent routing + remaining_steps guard
-│       │   │   ├── response_generator.py # LLM stream: synthesize + SSE token/products/done
-│       │   │   └── image_generation.py  # DALL-E + S3 upload + Valkey quota + SSE image_*
+│       │   │   ├── orchestrate.py       # 4-intent routing + remaining_steps guard
+│       │   │   ├── synthesize.py        # LLM stream: synthesize + SSE token/products/done
+│       │   │   └── generate_image.py    # DALL-E + S3 upload + Valkey quota + SSE image_*
 │       │   │
 │       │   ├── subagents/             # Complex sub-agents with internal ReAct tool loops
 │       │   │   ├── __init__.py
@@ -145,9 +145,10 @@ agentic-rag-ecommerce/
 │       ├── tasks/                     # Celery async tasks
 │       │   ├── __init__.py
 │       │   ├── celery_app.py          # Celery app factory + Beat schedule
-│       │   ├── webhook_task.py        # process_webhook (upsert/delete vector)
-│       │   ├── reindex_task.py        # reindex_products (full catalog sync)
-│       │   └── cleanup_task.py        # cleanup_expired_threads (nightly Beat)
+│       │   ├── process_webhook.py     # process_webhook (upsert/delete vector)
+│       │   ├── reindex_products.py    # reindex_products (full catalog sync)
+│       │   ├── cleanup_expired_threads.py # cleanup_expired_threads (nightly Beat)
+│       │   └── delete_thread.py       # delete_thread (cascade S3 + DB cleanup)
 │       │
 │       ├── schemas/                   # API request/response contracts (HTTP boundary only)
 │       │   ├── __init__.py
@@ -505,13 +506,14 @@ exclude = ["**/__pycache__"]
 | `app` | `python` (via Dockerfile) | `3.12-slim` |
 | `celery-worker` | Same Dockerfile as `app` | — |
 | `celery-beat` | Same Dockerfile as `app` | — |
-| `postgres` | `postgres` | `16.14` |
+| `postgres` | `postgres` | `16.14-alpine` |
 | `qdrant` | `qdrant/qdrant` | `v1.18.1` |
-| `valkey` | `valkey/valkey` | `9.1.0` |
-| `rabbitmq` | `rabbitmq` | `4.3.1-management` |
+| `valkey` | `valkey/valkey` | `9.1.0-alpine` |
+| `rabbitmq` | `rabbitmq` | `4.3.1-management-alpine` |
+| `prometheus` | `prom/prometheus` | `v3.4.0` |
 | `grafana` | `grafana/grafana` | `13.0.2` |
 | `loki` | `grafana/loki` | `3.7.2` |
-| `promtail` | `grafana/promtail` | `3.6.11` |
+| `promtail` | `grafana/promtail` | `3.5.0` |
 
 ### 4.2 docker-compose.yml
 
@@ -552,14 +554,15 @@ services:
 
   app:
     <<: *app-common
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8080
     ports:
-      - "8000:8000"
+      - "8080:8080"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 15s
       timeout: 5s
       retries: 3
+      start_period: 30s
 
   celery-worker:
     <<: *app-common
@@ -584,7 +587,7 @@ services:
   # ── Data Layer ────────────────────────────────────────────────────────────────
 
   postgres:
-    image: postgres:16.14
+    image: postgres:16.14-alpine
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-app}
       POSTGRES_USER: ${POSTGRES_USER:-app}
@@ -593,7 +596,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks: [app-net]
     ports:
-      - "5432:5432"
+      - "5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-app}"]
       interval: 10s
@@ -607,21 +610,15 @@ services:
     networks: [app-net]
     ports:
       - "6333:6333"
-      - "6334:6334"  # gRPC
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   valkey:
-    image: valkey/valkey:9.1.0
+    image: valkey/valkey:9.1.0-alpine
     command: valkey-server --save 60 1 --loglevel warning
     volumes:
       - valkey_data:/data
     networks: [app-net]
     ports:
-      - "6379:6379"
+      - "6380:6379"
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 10s
@@ -629,7 +626,7 @@ services:
       retries: 5
 
   rabbitmq:
-    image: rabbitmq:4.3.1-management
+    image: rabbitmq:4.3.1-management-alpine
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
@@ -807,7 +804,7 @@ THREAD_LIST_CACHE_TTL=120
 
 # ── Observability ─────────────────────────────────────────────────────────────
 LOG_LEVEL=INFO
-LANGCHAIN_TRACING_V2=false
+LANGSMITH_TRACING=false
 LANGSMITH_API_KEY=
 LANGSMITH_PROJECT=agentic-rag-ecommerce
 
@@ -896,7 +893,7 @@ class Settings(BaseSettings):
 
     # Observability
     log_level: str = "INFO"
-    langchain_tracing_v2: bool = False
+    langsmith_tracing: bool = False
     langsmith_api_key: str = ""
     langsmith_project: str = "agentic-rag-ecommerce"
 
@@ -918,45 +915,36 @@ def get_settings() -> Settings:
 
 ## 7. Health and Readiness Endpoints
 
-### 7.1 `GET /health` — Liveness Probe
+### 7.1 `GET /health` — Liveness + Readiness Probe
 
-Always returns `200 OK` if the process is running. No external checks.
-
-```json
-{"status": "ok", "service": "agentic-rag-ecommerce"}
-```
-
-### 7.2 `GET /ready` — Readiness Probe
-
-Checks all critical dependencies. Returns `200 OK` only if all pass; `503 Service Unavailable` if any fail. Each check has a 2-second timeout.
+Checks all critical dependencies. Returns `200 OK` if all pass; `503 Service Unavailable` if any fail.
 
 | Check | Method | Success Condition |
 |---|---|---|
 | PostgreSQL | `SELECT 1` | Returns row without error |
-| Qdrant | `GET /healthz` | HTTP 200 |
-| Valkey | `PING` | Returns `PONG` |
-| RabbitMQ | Not checked | Only checked by Celery at startup |
+| Qdrant | `get_collection()` | Returns without error |
+| Valkey | `PING` | Returns `True` |
 
-Response on success:
+Response on success (`200`):
 ```json
 {
-  "status": "ready",
+  "status": "ok",
   "checks": {
-    "postgres": "ok",
-    "qdrant": "ok",
-    "valkey": "ok"
+    "postgres": true,
+    "qdrant": true,
+    "valkey": true
   }
 }
 ```
 
-Response on failure (503):
+Response on failure (`503`):
 ```json
 {
-  "status": "not_ready",
+  "status": "degraded",
   "checks": {
-    "postgres": "ok",
-    "qdrant": "error: connection refused",
-    "valkey": "ok"
+    "postgres": true,
+    "qdrant": false,
+    "valkey": true
   }
 }
 ```
@@ -1081,11 +1069,11 @@ def upgrade() -> None:
     # Only custom application tables are managed here.
     op.execute("""
         CREATE TABLE IF NOT EXISTS threads (
-            thread_id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            id                         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             user_id                    TEXT NOT NULL,
             title                      TEXT,
             title_generated            BOOLEAN NOT NULL DEFAULT FALSE,
-            title_generation_attempts  INT NOT NULL DEFAULT 0,
+            title_generation_attempts  SMALLINT NOT NULL DEFAULT 0,
             status                     TEXT NOT NULL DEFAULT 'idle'
                                        CHECK (status IN ('idle', 'busy', 'deleting')),
             created_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1093,25 +1081,25 @@ def upgrade() -> None:
             last_activity_at           TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
-    op.execute("CREATE INDEX IF NOT EXISTS idx_threads_user_id ON threads (user_id)")
-    op.execute("CREATE INDEX IF NOT EXISTS idx_threads_last_activity ON threads (last_activity_at)")
-    op.execute("CREATE INDEX IF NOT EXISTS idx_threads_status ON threads (status)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_threads_user_id ON threads (user_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_threads_last_activity_at ON threads (last_activity_at)")
 
     op.execute("""
         CREATE TABLE IF NOT EXISTS generated_images (
-            image_id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            thread_id             UUID NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
-            request_message_id    UUID NOT NULL,
+            id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            thread_id             UUID NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
             user_id               TEXT NOT NULL,
+            prompt                TEXT NOT NULL,
             s3_key                TEXT NOT NULL,
             s3_url                TEXT NOT NULL,
-            prompt_text           TEXT,
+            model                 TEXT NOT NULL,
+            request_message_id    TEXT,
             created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
-    op.execute("CREATE INDEX IF NOT EXISTS idx_generated_images_thread_id ON generated_images (thread_id)")
-    op.execute("CREATE INDEX IF NOT EXISTS idx_generated_images_user_id ON generated_images (user_id)")
-    op.execute("CREATE INDEX IF NOT EXISTS idx_generated_images_request_message_id ON generated_images (request_message_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_generated_images_thread_id ON generated_images (thread_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_generated_images_user_id_date ON generated_images (user_id, created_at)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_generated_images_request_message_id ON generated_images (request_message_id)")
 
 
 def downgrade() -> None:
@@ -1146,7 +1134,7 @@ alembic check
 ```
 1. Load Settings (pydantic-settings)
 2. Configure structlog
-3. Setup OTel tracing (if LANGCHAIN_TRACING_V2=true)
+3. Setup OTel tracing (if LANGSMITH_TRACING=true)
 4. [MIGRATION] Run: alembic upgrade head  \u2190 before app boots (CI/CD or entrypoint script)
 5. Create asyncpg connection pool
 6. Initialize psycopg pool (for LangGraph)

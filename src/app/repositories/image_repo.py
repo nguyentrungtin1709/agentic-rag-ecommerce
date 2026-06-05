@@ -31,6 +31,7 @@ class ImageRepository:
         thread_id: uuid.UUID,
         user_id: str,
         prompt: str,
+        s3_key: str,
         s3_url: str,
         model: str,
         request_message_id: str | None = None,
@@ -41,6 +42,7 @@ class ImageRepository:
             thread_id: Parent thread UUID.
             user_id: Saleor user ID for quota tracking.
             prompt: The prompt used to generate the image.
+            s3_key: S3 object key (path within the bucket).
             s3_url: Public S3 URL of the image.
             model: Model identifier (e.g. ``"dall-e-3"``).
             request_message_id: ``HumanMessage.id`` that triggered
@@ -55,15 +57,16 @@ class ImageRepository:
             row = await conn.fetchrow(
                 """
                 INSERT INTO generated_images
-                    (id, thread_id, user_id, prompt, s3_url, model, request_message_id)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                RETURNING id, thread_id, user_id, prompt, s3_url, model,
+                    (id, thread_id, user_id, prompt, s3_key, s3_url, model, request_message_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                RETURNING id, thread_id, user_id, prompt, s3_key, s3_url, model,
                           request_message_id, created_at
                 """,
                 image_id,
                 thread_id,
                 user_id,
                 prompt,
+                s3_key,
                 s3_url,
                 model,
                 request_message_id,
@@ -113,7 +116,7 @@ class ImageRepository:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, thread_id, user_id, prompt, s3_url, model,
+                SELECT id, thread_id, user_id, prompt, s3_key, s3_url, model,
                        request_message_id, created_at
                 FROM generated_images
                 WHERE thread_id = $1

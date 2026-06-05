@@ -75,7 +75,7 @@ services:
 
   # ── PostgreSQL 16 ──────────────────────────────────────────────────────────
   postgres:
-    image: postgres:16.4-alpine
+    image: postgres:16.14-alpine
     container_name: agentic-rag-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-app}
@@ -98,7 +98,7 @@ services:
 
   # ── Qdrant ─────────────────────────────────────────────────────────────────
   qdrant:
-    image: qdrant/qdrant:v1.13.0
+    image: qdrant/qdrant:v1.18.1
     container_name: agentic-rag-qdrant
     volumes:
       - qdrant_data:/qdrant/storage
@@ -131,7 +131,7 @@ services:
 
   # ── RabbitMQ ───────────────────────────────────────────────────────────────
   rabbitmq:
-    image: rabbitmq:4.1.0-management-alpine
+    image: rabbitmq:4.3.1-management-alpine
     container_name: agentic-rag-rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
@@ -175,7 +175,7 @@ services:
       driver: local
   # ── Grafana ────────────────────────────────────────────────────────────────
   grafana:
-    image: grafana/grafana:11.6.0
+    image: grafana/grafana:13.0.2
     container_name: agentic-rag-grafana
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
@@ -196,7 +196,7 @@ services:
 
   # ── Loki ───────────────────────────────────────────────────────────────────
   loki:
-    image: grafana/loki:3.5.0
+    image: grafana/loki:3.7.2
     container_name: agentic-rag-loki
     command: -config.file=/etc/loki/local-config.yaml
     ports:

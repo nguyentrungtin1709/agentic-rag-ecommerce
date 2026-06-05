@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from celery import Celery
 from celery.schedules import crontab
+from kombu import Queue
 
 from app.config import get_settings
 
@@ -38,6 +39,18 @@ celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
+    # Fix for RabbitMQ 4.3.0 — control/event queues must be exclusive (non-durable,
+    # non-exclusive transient queues are rejected by RabbitMQ 4.3+).
+    # This mirrors the fix in Celery PR #10290 (will be default in Celery 5.7.0).
+    control_queue_exclusive=True,
+    event_queue_exclusive=True,
+    # Explicit durable queues — required for RabbitMQ 4.x which disallows
+    # transient non-exclusive queues (deprecated_features.transient_nonexcl_queues).
+    task_queues=[
+        Queue("celery", durable=True),
+        Queue("cleanup", durable=True),
+    ],
+    task_default_queue="celery",
     # Celery Beat schedule.
     beat_schedule={
         "cleanup-expired-threads-nightly": {

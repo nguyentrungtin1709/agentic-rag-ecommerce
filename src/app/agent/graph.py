@@ -24,6 +24,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 
+from app.agent.nodes.generate_image import generate_image
 from app.agent.nodes.generate_title import generate_title
 from app.agent.nodes.orchestrate import orchestrate
 from app.agent.nodes.profiler import profiler
@@ -70,6 +71,7 @@ def build_graph(
     builder.add_node("run_product_rag", run_product_rag)
     builder.add_node("run_trend_scout", run_trend_scout)
     builder.add_node("synthesize", synthesize)
+    builder.add_node("generate_image", generate_image)
     builder.add_node("generate_title", generate_title)
 
     builder.set_entry_point("profiler")
@@ -77,7 +79,8 @@ def build_graph(
     builder.add_edge("orchestrate", "run_product_rag")
     builder.add_edge("run_product_rag", "run_trend_scout")
     builder.add_edge("run_trend_scout", "synthesize")
-    builder.add_edge("synthesize", "generate_title")
+    builder.add_edge("synthesize", "generate_image")
+    builder.add_edge("generate_image", "generate_title")
     builder.add_edge("generate_title", END)
 
     graph = builder.compile(checkpointer=checkpointer, store=store)
