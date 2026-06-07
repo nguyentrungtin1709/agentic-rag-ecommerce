@@ -14,6 +14,7 @@ import httpx
 import structlog
 
 from app.config import Settings
+from app.models.product import ProductPayload
 
 logger = structlog.get_logger(__name__)
 
@@ -28,9 +29,18 @@ query Products($first: Int!, $after: String) {
       node {
         id
         name
+        slug
         description
+        isAvailable
         category {
           name
+        }
+        collections(first: 10) {
+          edges {
+            node {
+              name
+            }
+          }
         }
         pricing {
           priceRange {
@@ -40,9 +50,15 @@ query Products($first: Int!, $after: String) {
                 currency
               }
             }
+            stop {
+              gross {
+                amount
+                currency
+              }
+            }
           }
         }
-        thumbnail {
+        thumbnail(size: 512, format: WEBP) {
           url
         }
       }
@@ -104,6 +120,49 @@ class SaleorClient:
 
         logger.info("Saleor products fetched", count=len(products))
         return products
+
+    @staticmethod
+    def node_to_product_payload(node: dict[str, Any], storefront_url: str) -> ProductPayload:
+        """Convert a raw Saleor GraphQL product node to a ``ProductPayload``.
+
+        Args:
+            node: A single ``node`` dict from the ``products.edges`` GraphQL response.
+            storefront_url: Base storefront URL from ``SALEOR_STOREFRONT_URL`` setting;
+                used to build the ``saleor_url`` field.
+
+        Returns:
+            ``ProductPayload`` populated from the Saleor GraphQL fields.
+        """
+        pricing = (node.get("pricing") or {}).get("priceRange") or {}
+        start_gross = (pricing.get("start") or {}).get("gross") or {}
+        stop_gross = (pricing.get("stop") or {}).get("gross") or {}
+
+        price_min: float = float(start_gross.get("amount") or 0.0)
+        price_max: float = float(stop_gross.get("amount") or price_min)
+        currency: str = str(start_gross.get("currency") or "USD")
+
+        slug: str = node.get("slug") or ""
+        collections: list[str] = [
+            edge["node"]["name"]
+            for edge in ((node.get("collections") or {}).get("edges") or [])
+            if edge.get("node", {}).get("name")
+        ]
+
+        return ProductPayload(
+            product_id=node["id"],
+            name=node.get("name") or "",
+            slug=slug,
+            description=node.get("description") or "",
+            category=(node.get("category") or {}).get("name") or "",
+            collections=collections,
+            price_min=price_min,
+            price_max=price_max,
+            currency=currency,
+            price_range="",  # derived and formatted by ProductIndexer at ingestion time
+            available=bool(node.get("isAvailable", True)),
+            saleor_url=f"{storefront_url}/products/{slug}/" if slug else "",
+            thumbnail_url=(node.get("thumbnail") or {}).get("url") or "",
+        )
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

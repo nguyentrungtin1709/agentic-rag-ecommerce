@@ -1,45 +1,61 @@
-%% Agent Workflow — LangGraph State Machine
-%% Multi-agent workflow compiled with AsyncPostgresSaver (checkpointer) + AsyncPostgresStore (store)
-%% Node patterns: sub-graph | ReAct agent | plain Python function
-%%
-%% AgentState fields:
-%%   messages: list[BaseMessage]     -- all conversation messages (managed by checkpointer)
-%%   user_profile: dict              -- extracted customer attributes
-%%   retrieved_products: list[...]   -- Qdrant search results
-%%   trend_summary: str | None       -- web-sourced trend report + text-to-image prompts
-%%   thread_title: str | None        -- auto-generated or fallback-truncated title
-%%   correlation_id: str             -- per-request traceability ID
-%%
-%% Reference: docs/analysis/02-REQUIREMENTS-SPECIFICATION.md (Section FR-055 to FR-067)
-
 flowchart TD
-    START([START])
-    Profiler["Profiler Node\n(plain function)\nMerge profile from current_profile_json\n+ latest_message only (ORCHESTRATOR_MODEL)\nStore.aput to AsyncPostgresStore"]
-    Orch["Orchestrator Node\n(plain function / ReAct)\nClassify intent using ORCHESTRATOR_MODEL\nCheck remaining_steps vs AGENT_FALLBACK_THRESHOLD\nIntents: sufficient | clarification_needed\n| out_of_scope | fallback"]
-    RAG["Product RAG Agent\n(LangGraph sub-graph or ReAct)\nQuery rewrite (English) + hybrid search\ndense (EMBEDDING_MODEL) + sparse BM25\n+ metadata filter in Qdrant\nStores: retrieved_products in AgentState"]
-    Trend["Trend Scout Node\n(ReAct agent with Tavily tool)\nTavily web search (DuckDuckGo fallback)\nSummarize trends + generate text-to-image prompts\nStores: trend_summary in AgentState"]
-    ResGen["Response Generator Node\n(plain function with streaming)\nSynthesizes: user_profile + retrieved_products\n+ trend_summary -> RESPONSE_MODEL\nSSE events: token / products / done / error\n(interleaved block model)"]
-    TitleGen["TitleGenerationNode\n(parallel branch, first run only)\nCondition: title_generated == false\nUses: TITLE_MODEL (max 6 words)\nRetries: up to TITLE_GENERATION_MAX_ATTEMPTS\nFallback: truncate first_message to TITLE_TRUNCATION_LENGTH\nEmits SSE: thread_title\nUpdates: threads table"]
-    ImgGen["ImageGenerationNode\n(parallel branch, inline -- NOT Celery)\nCondition: generate_image == true\n+ design context available\nCheck image_quota in Valkey\nDALL-E via RESPONSE_MODEL provider\nUpload to S3\nInsert generated_images with request_message_id\nEmits SSE: image_ready | image_failed"]
-    Checkpointer["AsyncPostgresSaver\n(automatic checkpoint after every node)\nSaves full AgentState + all messages\nper thread per checkpoint"]
-    END([END])
+    subgraph PARENT["Parent Graph — StateGraph(AgentState)"]
+        direction TB
 
-    START --> TitleGen
-    START --> Profiler
+        START([HTTP Request]) --> profiler
+        START -->|if not title_generated| title_gen
 
-    TitleGen --> |"title SSE emitted (or failed + retry scheduled)"| END
+        title_gen["TitleGenerationNode\nasync def\nLLM: TITLE_MODEL"]
+        title_gen --> TEND([END])
 
-    Profiler --> Orch
+        profiler["ProfilerNode\nasync def\nLoad + update UserProfile\nLLM: SUMMARIZE_MODEL\nStore: AsyncPostgresStore"]
+        profiler --> summarize
 
-    Orch --> |"intent: sufficient\nor clarification_needed\nor out_of_scope"| ResGen
-    Orch --> |"intent: fallback\n(remaining_steps <= AGENT_FALLBACK_THRESHOLD)"| ResGen
-    Orch --> |"intent: need product search"| RAG
-    Orch --> |"intent: need trend info"| Trend
+        summarize["SummarizeNode\nasync def\nno-op if len(messages) < threshold\nLLM: SUMMARIZE_MODEL\nRemoveMessage + summary update"]
+        summarize --> orchestrate
 
-    RAG --> |"retrieved_products set in AgentState"| Orch
-    Trend --> |"trend_summary set in AgentState"| Orch
+        orchestrate["OrchestratorNode\nasync def + tool binding\nupdate_intent tool\nLLM: ORCHESTRATOR_MODEL\nChecks remaining_steps"]
 
-    ResGen --> ImgGen
-    ResGen --> Checkpointer
-    ImgGen --> |"SSE image_ready or image_failed"| Checkpointer
-    Checkpointer --> END
+        orchestrate -->|need_product_search\npriority: always first| rag
+        orchestrate -->|need_trend_info| trend
+        orchestrate -->|sufficient / clarification_needed\nout_of_scope / fallback| synth
+
+        subgraph RAG["run_product_rag — ProductRAGAgent subgraph (StateGraph)"]
+            direction TB
+            r1["prepare_query_node\nLLM: ORCHESTRATOR_MODEL\nStructured output: query + filters\nInput: messages + summary + user_profile"]
+            r2["hybrid_search_node\nLlamaIndex + Qdrant\ndense + sparse BM25\nRelative Score Fusion"]
+            r3["llm_postprocess_node\nLLM: RERANK_MODEL\nFilter top-K product IDs\nMap back to ProductPayload"]
+            r1 --> r2 --> r3
+        end
+
+        subgraph TREND["run_trend_scout — TrendScoutNode (create_agent)"]
+            direction TB
+            t1["Dynamic SystemMessage\n(summary + user_profile\n+ retrieved_products)"]
+            t2["create_agent ReAct loop\nLLM: ORCHESTRATOR_MODEL\ntools: tavily_search / duckduckgo_search\nOutput: TrendScoutOutput\n(trend_summary + image_prompt)"]
+            t1 --> t2
+        end
+
+        rag --> orchestrate
+        trend --> orchestrate
+
+        synth["ResponseGeneratorNode\nasync def + SSE streaming\nLLM: RESPONSE_MODEL\nInjects: user_profile + products\n+ trend_summary + summary"]
+
+        synth -->|if image conditions met| imggen
+        synth --> END2([END + SSE done])
+
+        imggen["ImageGenerationNode\nasync def — parallel branch\nDALL-E API + S3 upload\nSSE: image_ready event\nQuota: Valkey counter"]
+        imggen --> END3([END])
+    end
+
+    subgraph STORAGE["Persistence Layer"]
+        pg[("AsyncPostgresSaver\nAgentState checkpoints\nper thread_id")]
+        store[("AsyncPostgresStore\nUserProfile\nper user_id — cross-thread")]
+        qdrant[("Qdrant\nHybrid vectors\ndense + sparse BM25")]
+        valkey[("Valkey/Redis\nRate limiting\nResponse cache\nImage quota")]
+    end
+
+    profiler <-->|get/put UserProfile| store
+    PARENT <-->|checkpoint per turn| pg
+    RAG <-->|hybrid search| qdrant
+    synth <-->|response cache| valkey
+    imggen <-->|image quota| valkey

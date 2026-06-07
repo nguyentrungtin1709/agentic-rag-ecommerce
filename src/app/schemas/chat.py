@@ -5,6 +5,28 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+class ProductItem(BaseModel):
+    """Product entry emitted in the ``products`` SSE event (FR-003, FR-070).
+
+    Attributes:
+        id: Saleor product ID.
+        name: Product display name.
+        description: Contextualized product description rewritten by
+            ``ResponseGeneratorNode`` at synthesis time to fit the user's
+            style context and occasion.
+        price_range: Human-readable price range string, e.g. ``"100k - 250k VND"``.
+        saleor_url: Storefront product URL.
+        thumbnail_url: WEBP product thumbnail URL.
+    """
+
+    id: str
+    name: str
+    description: str = ""
+    price_range: str
+    saleor_url: str
+    thumbnail_url: str = ""
+
+
 class ChatRequest(BaseModel):
     """Request body for sending a chat message (FR-001)."""
 

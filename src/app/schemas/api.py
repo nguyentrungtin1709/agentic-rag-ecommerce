@@ -12,7 +12,7 @@ This file exists only for backward compatibility during the Phase 4 → 6 transi
 
 from __future__ import annotations
 
-from app.schemas.chat import ChatChunk, ChatRequest, DonePayload, UsagePayload
+from app.schemas.chat import ChatChunk, ChatRequest, DonePayload, ProductItem, UsagePayload
 from app.schemas.common import CursorPage, ErrorResponse, HealthResponse, PaginatedResponse
 from app.schemas.thread import CreateThreadRequest, ThreadListResponse, ThreadResponse
 from app.schemas.webhook import SaleorWebhookPayload
@@ -29,6 +29,7 @@ __all__ = [
     "ErrorResponse",
     "HealthResponse",
     "PaginatedResponse",
+    "ProductItem",
     "SaleorWebhookPayload",
     "ThreadListResponse",
     "ThreadResponse",
