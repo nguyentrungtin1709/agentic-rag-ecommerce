@@ -16,73 +16,84 @@ from langgraph.graph import MessagesState
 class AgentState(MessagesState):
     """Shared mutable state for the POD Stylist agent graph.
 
-    Required fields (FR-057)
-    ------------------------
-    messages:
-        Inherited from ``MessagesState``.  Full conversation history;
-        new messages are appended via the built-in ``add_messages``
-        reducer — never overwrites existing entries.
-    user_profile:
-        Serialised ``UserProfile`` JSON loaded and merged by the
-        ``profiler`` node from ``AsyncPostgresStore`` at the start of
-        each turn.
-    retrieved_products:
-        List of ``ProductPayload`` dicts returned by the ``product_rag``
-        subagent during the current turn.
-    trend_summary:
-        Free-text trend report returned by ``trend_scout``, or ``None``
-        when the node has not run yet this turn.
-    thread_title:
-        Proposed (or finalised) thread title; ``None`` until the
-        ``generate_title`` node produces one.
-    correlation_id:
-        Request-scoped UUID4 string assigned once at the API boundary
-        when a ``POST /api/v1/threads/{thread_id}/runs/stream`` request
-        arrives (FR-001, FR-004).  Flows unchanged through every graph node.
+    Attributes:
+        messages: Inherited from ``MessagesState``.  Full conversation
+            history; new messages are appended via the built-in
+            ``add_messages`` reducer — never overwrites existing entries.
+        user_profile: Serialised ``UserProfile`` JSON loaded and merged by
+            ``ProfilerNode`` from ``AsyncPostgresStore`` at the start of
+            each turn.  ``None`` when no profile has been saved yet.
+        retrieved_products: List of ``ProductPayload`` dicts returned by
+            ``ProductRAGAgent`` during the current turn.  Empty list when
+            the subagent has not run yet.
+        trend_summary: Concise 2-3 sentence trend report produced by
+            ``TrendScoutNode``, or ``None`` when the node has not run yet
+            this turn.  Does NOT contain the image prompt (see
+            ``image_prompt``).
+        thread_title: Proposed (or finalised) thread title set by
+            ``TitleGenerationNode``, or ``None`` until generated.
+        correlation_id: Request-scoped UUID4 string assigned once at the
+            API boundary when a ``POST /runs/stream`` request arrives
+            (FR-001, FR-004).  Flows unchanged through every graph node.
 
-        Usage pattern in nodes::
+            Bind it to structlog context vars inside each node so every
+            log record in that async context is automatically tagged::
 
-            import structlog
+                structlog.contextvars.bind_contextvars(
+                    correlation_id=state["correlation_id"]
+                )
 
-            structlog.contextvars.bind_contextvars(
-                correlation_id=state["correlation_id"]
-            )
+            Also forwarded to LangSmith via ``config["metadata"]`` so
+            each LLM trace is linked to the originating HTTP request
+            (NFR-021).
 
-        After ``bind_contextvars``, every ``logger.*()`` call in that
-        async context automatically includes ``correlation_id`` in the
-        JSON log record — no need to pass it as a keyword argument
-        each time (FR-067, FR-111).
+        user_id: Saleor user ID extracted from the request JWT.
+        thread_id: UUID string identifying the current chat session.
+        intent: Orchestrator classification result written by
+            ``OrchestratorNode`` after each LLM routing call (FR-058).
+            ``None`` before the orchestrate node runs for the first time.
 
-        Also forwarded to LangSmith via ``config["metadata"]`` so each
-        LLM trace is labelled with the originating HTTP request
-        (NFR-021)::
+            Valid values:
 
-            config = {"metadata": {"correlation_id": correlation_id}}
+            - ``'need_product_search'`` — dispatch ``ProductRAGAgent``
+            - ``'need_trend_info'`` — dispatch ``TrendScoutNode``
+            - ``'sufficient'`` — enough data gathered; go to synthesize
+            - ``'clarification_needed'`` — ask a clarifying question
+            - ``'out_of_scope'`` — request is outside the assistant scope
+            - ``'fallback'`` — forced route when step budget is low or no
+              other intent applies
 
-    Routing & control fields
-    -------------------------
-    user_id:
-        Saleor user ID extracted from the request JWT.
-    thread_id:
-        UUID string identifying the current chat session.
-    intent:
-        Orchestrator classification result: ``'sufficient'``,
-        ``'clarification_needed'``, ``'out_of_scope'``, or ``'fallback'``
-        (FR-058).  ``None`` before the orchestrate node runs.
-    title_generated:
-        Loaded from the ``threads`` table at run start.  When ``False``
-        the ``generate_title`` node runs as a parallel branch (FR-064).
-    fallback_count:
-        Number of consecutive turns where no satisfactory recommendation
-        could be assembled.  Supplementary to LangGraph
-        ``config["remaining_steps"]`` (FR-059).
-    image_url:
-        Public S3 URL of the inline-generated image after the
-        ``ImageGenerationNode`` completes, or ``None`` (FR-050, FR-053).
-        Image generation runs inside the graph — NOT via Celery (FR-048).
-    image_prompt:
-        The DALL-E prompt synthesised by ``ImageGenerationNode``, or
-        ``None``.  Included in the ``image_ready`` SSE event (FR-053).
+        title_generated: Whether the thread title has already been
+            generated and persisted.  Loaded from the ``threads`` table at
+            run start.  When ``False``, ``TitleGenerationNode`` runs as a
+            parallel branch (FR-064).
+        fallback_count: Number of consecutive turns where no satisfactory
+            recommendation could be assembled.  Supplementary guard in
+            addition to LangGraph ``config["remaining_steps"]`` (FR-059).
+        image_url: Public S3 URL of the generated image after
+            ``ImageGenerationNode`` completes, or ``None`` (FR-050,
+            FR-053).  Image generation runs inside the graph — NOT via
+            Celery (FR-048).
+        image_prompt: Text-to-image prompt produced by ``TrendScoutNode``
+            (as part of ``TrendScoutOutput.image_prompt``), or ``None``
+            when not applicable.  ``ImageGenerationNode`` reads this value
+            to call DALL-E; the prompt is also included in the
+            ``image_ready`` SSE event (FR-053).
+        summary: Accumulated conversation summary produced by
+            ``SummarizeNode``.  Empty string when no summarisation has
+            occurred yet.  Overwritten each time the message count reaches
+            ``MESSAGE_SUMMARIZE_THRESHOLD``.  Injected as context by
+            ``ResponseGeneratorNode``, ``ProductRAGAgent``, and
+            ``TrendScoutNode`` after old messages are removed.
+        generate_image: Whether the client requested image generation for
+            this turn (FR-047).  Set once at the API boundary from
+            ``ChatRequest.generate_image`` and remains constant through
+            the full graph run.  ``ImageGenerationNode`` reads this flag
+            to decide whether to proceed.
+        first_user_message: Text of the very first ``HumanMessage`` in
+            this thread.  Populated at the API boundary on the first turn;
+            ``None`` until then.  ``TitleGenerationNode`` uses this as the
+            seed for generating the thread title (FR-022).
     """
 
     # ── FR-057 required fields ─────────────────────────────────────────────
@@ -93,7 +104,7 @@ class AgentState(MessagesState):
     thread_title: str | None
     correlation_id: str
 
-    # ── Routing & control ─────────────────────────────────────────────────
+    # ── Routing & control ──────────────────────────────────────────────────
     user_id: str
     thread_id: str
     intent: str | None
@@ -101,3 +112,8 @@ class AgentState(MessagesState):
     fallback_count: int
     image_url: str | None
     image_prompt: str | None
+
+    # ── Memory & generation control (DRAFT 0.6) ───────────────────────────
+    summary: str
+    generate_image: bool
+    first_user_message: str | None

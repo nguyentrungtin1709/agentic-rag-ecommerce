@@ -60,6 +60,24 @@ class Settings(BaseSettings):
     aws_secret_access_key: str = Field(default="")
     aws_region: str = Field(default="ap-southeast-1")
 
+    # ── Message Summarization ───────────────────────────────────────────────
+    message_summarize_threshold: int = Field(default=12)
+    message_summarize_count: int = Field(default=8)
+
+    # ── LLM Model Names (extended) ──────────────────────────────────────────
+    rerank_model: str = Field(default="gpt-5.4-mini")
+    summarize_model: str = Field(default="gpt-5.4-mini")
+
+    # ── Qdrant Search Top-K ─────────────────────────────────────────────────
+    qdrant_sparse_top_k: int = Field(default=12)
+    qdrant_similarity_top_k: int = Field(default=12)
+    qdrant_hybrid_top_k: int = Field(default=9)
+    qdrant_rerank_top_k: int = Field(default=3)
+
+    # ── Ingestion ───────────────────────────────────────────────────────────
+    description_max_chars: int = Field(default=500)
+    saleor_storefront_url: str = Field(default="")
+
     # ── Agent Behavior ──────────────────────────────────────────────────────
     max_agent_steps: int = Field(default=10)
     agent_fallback_threshold: int = Field(default=2)
