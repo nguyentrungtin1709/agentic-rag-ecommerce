@@ -9,18 +9,26 @@ class UserProfile(BaseModel):
     """Long-term user style preferences stored in LangGraph AsyncPostgresStore.
 
     The namespace used for storage is ``("profiles", user_id)``.
+    The model does not carry ``user_id`` — the key is the namespace itself.
 
     Attributes:
-        user_id: Saleor user ID extracted from the JWT ``sub`` claim.
-        preferred_styles: Style descriptors the user has shown interest in
-            (e.g. ``["minimalist", "streetwear"]``).
-        favourite_colours: Colour names or hex codes the user prefers.
-        disliked_themes: Themes or styles the user has explicitly rejected.
-        last_updated: ISO-8601 timestamp of the last profile write.
+        age_group: Broad age bracket inferred from conversation context
+            (e.g. ``"teen"``, ``"adult"``, ``"senior"``).
+        style_preferences: Style descriptors accumulated over sessions
+            (e.g. ``["minimalist", "streetwear", "vintage"]``).
+        product_interests: Product types the user has shown interest in
+            (e.g. ``["t-shirt", "mug", "canvas"]``).
+        occasion_context: Most recently mentioned occasion or use case
+            (e.g. ``"Christmas gift"``, ``"birthday"``).
+        recipient_context: Who the product is intended for when mentioned
+            (e.g. ``"mom"``, ``"friend"``, ``"self"``).
+        budget_range: Free-text budget signal extracted from the latest
+            message (e.g. ``"under 200k"``, ``"cheap"``).
     """
 
-    user_id: str
-    preferred_styles: list[str] = Field(default_factory=list)
-    favourite_colours: list[str] = Field(default_factory=list)
-    disliked_themes: list[str] = Field(default_factory=list)
-    last_updated: str = ""
+    age_group: str | None = None
+    style_preferences: list[str] = Field(default_factory=list)
+    product_interests: list[str] = Field(default_factory=list)
+    occasion_context: str | None = None
+    recipient_context: str | None = None
+    budget_range: str | None = None

@@ -5,21 +5,28 @@ Implements ``ProfilerNode`` (FR-027, FR-028, FR-031, FR-055).
 Runs at the start of every agent turn.  In a single node it:
   1. Reads the current ``UserProfile`` JSON from ``AsyncPostgresStore``
      under namespace ``("profiles", user_id)``.
-  2. Calls the ``ORCHESTRATOR_MODEL`` with the payload
-     ``{current_profile_json, latest_user_message}`` to produce a merged
-     profile that incorporates newly observed style signals.
-  3. Writes the merged profile back via ``store.aput``.
-  4. Returns ``{"user_profile": merged_profile}`` as a partial state update.
-
-This is a stub.  Step 2 (LLM call) is not yet implemented.
+  2. Extracts the latest ``HumanMessage`` content from ``state["messages"]``.
+  3. Calls ``SUMMARIZE_MODEL`` with structured output (``UserProfile``)
+     using only ``current_profile`` and ``latest_message``
+     (FR-028 — never the full conversation history).
+  4. Writes the merged profile back via ``store.aput``.
+  5. Returns ``{"user_profile": merged_profile}`` as a partial state update.
 """
 
 from __future__ import annotations
 
+import json
+from typing import cast
+
 import structlog
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
 from langgraph.store.base import BaseStore
 
+from app.agent.prompts import load_prompt
 from app.agent.state import AgentState
+from app.config import get_settings
+from app.models.profile import UserProfile
 
 logger = structlog.get_logger(__name__)
 
@@ -27,41 +34,75 @@ logger = structlog.get_logger(__name__)
 async def profiler(state: AgentState, store: BaseStore) -> dict:
     """Load, merge, and persist the user's long-term style profile.
 
-    This is a stub.  The LLM-driven merge step (FR-027) is not yet
-    implemented; the node currently reads the existing profile and writes
-    it back unchanged.
+    Reads the existing ``UserProfile`` from ``AsyncPostgresStore``, extracts
+    the latest user message, merges any new style signals via
+    ``SUMMARIZE_MODEL``, persists the result, and returns the merged profile
+    as a partial state update.
 
     Args:
         state: Current agent state.
         store: LangGraph ``AsyncPostgresStore`` injected by the runtime.
 
     Returns:
-        Partial state update with ``user_profile`` populated.
+        Partial state update ``{"user_profile": <merged profile dict>}``.
     """
-    # Bind correlation_id to structlog context vars so every log record
-    # emitted inside this node (and any awaited callees) automatically
-    # includes it — no need to pass it as a keyword argument each time.
-    # FR-004 / FR-067 / FR-111.
     structlog.contextvars.bind_contextvars(
         correlation_id=state["correlation_id"],
         node="profiler",
     )
 
+    settings = get_settings()
     user_id = state["user_id"]
     namespace = ("profiles", user_id)
 
     # Step 1 — load current profile
     item = await store.aget(namespace, "profile")
-    current_profile: dict | None = item.value if item else None
+    if item is not None:
+        try:
+            current_profile = UserProfile.model_validate(item.value)
+        except Exception:
+            current_profile = UserProfile()
+    else:
+        current_profile = UserProfile()
 
-    logger.debug("Profile loaded", user_id=user_id, found=current_profile is not None)
+    logger.debug("Profile loaded", user_id=user_id, found=item is not None)
 
-    # Step 2 — LLM merge (STUB: skipped, no changes applied)
-    merged_profile = current_profile
+    # Step 2 — extract latest HumanMessage (scan from end; FR-028)
+    latest_message: str | None = None
+    for msg in reversed(state["messages"]):
+        if isinstance(msg, HumanMessage):
+            content = msg.content
+            latest_message = content if isinstance(content, str) else str(content)
+            break
 
-    # Step 3 — persist merged profile
-    if merged_profile is not None:
-        await store.aput(namespace, "profile", merged_profile)
-        logger.debug("Profile persisted", user_id=user_id)
+    if latest_message is None:
+        logger.debug("No HumanMessage found, skipping LLM merge", user_id=user_id)
+        return {"user_profile": current_profile.model_dump()}
 
-    return {"user_profile": merged_profile}
+    # Step 3 — call SUMMARIZE_MODEL with structured output
+    # FR-028: pass ONLY current_profile + latest_message (never full history)
+    llm = ChatOpenAI(model=settings.summarize_model).with_structured_output(UserProfile)
+    human_body = json.dumps(
+        {
+            "current_profile": current_profile.model_dump(),
+            "latest_message": latest_message,
+        },
+        ensure_ascii=False,
+    )
+    merged = cast(
+        UserProfile,
+        await llm.ainvoke(
+            [
+                SystemMessage(content=load_prompt("profiler_system")),
+                HumanMessage(content=human_body),
+            ]
+        ),
+    )
+
+    logger.debug("Profile merged", user_id=user_id)
+
+    # Step 4 — persist merged profile
+    await store.aput(namespace, "profile", merged.model_dump())
+    logger.debug("Profile persisted", user_id=user_id)
+
+    return {"user_profile": merged.model_dump()}
