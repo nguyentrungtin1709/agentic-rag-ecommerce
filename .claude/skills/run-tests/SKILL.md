@@ -1,7 +1,7 @@
 ---
 name: run-tests
 description: Test execution workflow - run unit tests, linting, and type checking. Use when verifying code quality, running the full test suite, or checking before a commit.
-disable-model-invocation: true
+<!-- disable-model-invocation: true -->
 allowed-tools: Bash(pytest *) Bash(ruff *) Bash(pyright *) Bash(pre-commit *) Bash(uv run *)
 ---
 

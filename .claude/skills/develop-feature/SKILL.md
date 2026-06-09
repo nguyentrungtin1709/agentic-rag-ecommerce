@@ -1,7 +1,7 @@
 ---
 name: develop-feature
 description: Full development workflow from planning through deployment for AI Agent features. Use when developing new features, making significant architecture changes, or starting work on any non-trivial implementation.
-disable-model-invocation: true
+<!-- disable-model-invocation: true -->
 ---
 
 # Develop Feature Workflow

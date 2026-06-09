@@ -1,7 +1,7 @@
 ---
 name: commit-message
 description: Generate conventional commit messages - use when creating commits, writing commit messages, or asking for git commit help.
-disable-model-invocation: true
+<!-- disable-model-invocation: true -->
 ---
 
 # Commit Message Skill

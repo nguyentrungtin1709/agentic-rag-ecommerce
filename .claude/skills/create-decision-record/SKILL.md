@@ -1,7 +1,7 @@
 ---
 name: create-decision-record
 description: Create a decision history record in the history/ directory. Use before writing any implementation code for a new feature, architecture change, or significant technical decision.
-disable-model-invocation: true
+<!-- disable-model-invocation: true -->
 ---
 
 # Create Decision Record Skill
