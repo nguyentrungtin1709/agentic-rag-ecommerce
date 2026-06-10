@@ -504,6 +504,33 @@ metadata filters. Category/collections/style intent must be embedded into the `q
 
 4. Return `{"retrieved_products": result["retrieved_products"]}`.
 
+**Shared `AsyncQdrantClient` injection — dual-path (agreed 2026-06-10):**
+
+The wrapper uses a **dual-path approach** for the Qdrant async client:
+
+- **Path A (primary):** Read `aclient` from
+  `config["configurable"]["qdrant_aclient"]`. Uses the shared singleton from
+  `QdrantService` (no per-call handshake).
+- **Path B (fallback):** If `config` does not carry the client, build a
+  transient `AsyncQdrantClient` and close it in a `finally` block. Active
+  for the duration of a single call — costs ~50ms TCP handshake per
+  request.
+
+In Phase 4 only **Path B** actually executes because the chat endpoint
+(`api/chat.py`) is a 501 stub — no caller injects the shared client yet.
+Path A is wired, tested
+(`test_run_product_rag_uses_aclient_from_config_when_provided`), and
+waiting for Phase 7 to activate it.
+
+**Phase 7 production migration (LOCKED, must not be skipped):**
+
+When the chat endpoint is implemented in Phase 7, the API handler MUST
+inject `request.app.state.qdrant.client` into
+`config["configurable"]["qdrant_aclient"]`. This switches the wrapper to
+Path A and eliminates the per-call handshake cost. See the
+"Shared resources injection into graph config" sub-section in the Phase 7
+section below for the exact task to be picked up.
+
 ### Tests to Write
 
 | Test File | Test Cases |
@@ -880,6 +907,34 @@ yields formatted SSE lines to the client.
 4. Thread status guard (FR-014): Check `thread.status == "busy"` before creating the task.
    Return `409 Conflict` if busy. Set `status = "busy"` atomically before starting; set
    back to `"idle"` in a `finally` block after graph completes.
+
+### Shared resources injection into graph config
+
+**Phase 7 must inject the following keys into `config["configurable"]`**
+at the chat endpoint handler, so subagents and nodes can read them via
+`config["configurable"][key]`:
+
+1. **`thread_id`** (string) — UUID of the current thread. Used by
+   `AsyncPostgresSaver` for checkpoint keying.
+2. **`user_id`** (string) — Saleor user ID from the verified JWT.
+3. **`correlation_id`** (string) — Per-request UUID4 generated at request
+   entry; forwarded to all subagent LLM calls via LangChain `metadata` for
+   LangSmith trace linkage (NFR-021).
+4. **`sse_queue`** (`asyncio.Queue`) — Per-request queue for SSE event
+   streaming (Q-7 RESOLVED).
+5. **`qdrant_aclient`** (`AsyncQdrantClient`) — **Phase 4 carry-over, do
+   NOT forget.** Read from `request.app.state.qdrant.client` and inject
+   into the config. This activates **Path A** in the `run_product_rag`
+   wrapper (defined in the Phase 4 Wrapper section), replacing the
+   per-call transient client fallback (Path B). Eliminates ~50ms TCP
+   handshake per chat request. Without this injection, every
+   `/runs/stream` request will create a new `AsyncQdrantClient` and
+   close it at end of run — correctness OK but wasteful in production.
+
+**Task ownership:** Whoever implements the Phase 7 chat endpoint is
+responsible for adding the `qdrant_aclient` injection. Do not mark
+Phase 7 complete until this is verified in production logs (no
+`"transient AsyncQdrantClient created"` log lines per request).
 
 ### ResponseGeneratorNode
 

@@ -21,3 +21,9 @@ Given the conversation context, user profile, and the user's latest request, pro
 
 Return a valid JSON object with keys: `query` (string), `available` (bool or null),
 `price_max` (float or null).
+
+## Conversation
+
+The full recent conversation arrives as the `HumanMessage`(s) that
+follow this system prompt -- read them to resolve anaphoric references
+(e.g. "and a matching one") before producing the query.
