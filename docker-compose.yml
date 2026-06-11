@@ -224,6 +224,50 @@ services:
     logging:
       driver: local
 
+  # ── Admin UIs (profile: tools — opt-in, not started by default) ───────────
+  # Start with:  docker compose --profile tools up -d
+  # Stop with:   docker compose --profile tools down
+  #
+  # - Adminer        : PostgreSQL web UI          -> http://localhost:8081
+  # - Redis Insight  : Valkey (Redis-compatible)  -> http://localhost:5540
+  # - Qdrant native  : built-in dashboard         -> http://localhost:6333/dashboard
+  # - RabbitMQ Mgmt  : already exposed by image   -> http://localhost:15672
+  adminer:
+    image: adminer:5.4.2-standalone
+    container_name: agentic-rag-adminer
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+      ADMINER_DESIGN: pepa-linha-dark
+      ADMINER_AUTOLOGIN: "false"
+    ports:
+      - "8081:8080"
+    networks:
+      - agentic-rag
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles:
+      - tools
+    logging:
+      driver: local
+
+  redis-insight:
+    image: redis/redisinsight:3.4.2
+    container_name: agentic-rag-redis-insight
+    ports:
+      - "5540:5540"
+    networks:
+      - agentic-rag
+    depends_on:
+      valkey:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles:
+      - tools
+    logging:
+      driver: local
+
 networks:
   agentic-rag:
     name: agentic-rag
