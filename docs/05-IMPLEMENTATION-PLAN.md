@@ -134,15 +134,42 @@ See `temp/phase-4-product-rag.md`.
 
 ---
 
-## Phase 5 — Cross-cutting wiring + Repo/Service enhancements
+## Phase 5 — Cross-cutting wiring + Repo/Service enhancements + Path A foundation
 
 ### Objective
 
 Make the application production-ready at the boundaries: enforce
-per-user rate limits, cache thread-list responses, and add the small
+per-user rate limits, cache thread-list responses, add the small
 service / repository methods that downstream phases need (S3 delete +
 bucket ensure, Valkey quota + pattern delete, thread/image repos
-with cleanup and history-attachment queries).
+with cleanup and history-attachment queries), and lay the
+**shared-resource foundation** for Path A injection.
+
+Phase 5 wires the long-lived clients (`S3Service`, `AsyncOpenAI`)
+onto `app.state` so that Phase 14 (chat SSE) can inject them into
+`config["configurable"]` and eliminate per-request client
+construction. The convention is locked in a Phase-5 ADR
+(`history/5_0_0_SHARED_RESOURCE_INJECTION.md`).
+
+Scope of Path A in Phase 5:
+
+- `app.state.qdrant` (existing) — keep
+- `app.state.valkey` (existing) — keep
+- `app.state.s3` (**NEW**) — `S3Service` singleton, `ensure_bucket` at startup
+- `app.state.openai` (**NEW**) — `AsyncOpenAI` singleton for DALL-E (Phase 13)
+
+Resources that do **NOT** go on `app.state` (rationale in ADR):
+
+- `asyncpg.Pool` / `psycopg_pool` — already module-level singletons in `app/db/session.py`
+- `ThreadRepository` / `ImageRepository` — thin wrappers, free to construct inline
+- `ChatOpenAI` (LangChain wrapper) — `langchain-openai==1.2.2` does not expose a
+  pre-constructed `AsyncOpenAI` through `ChatOpenAI.__init__` in a clean way;
+  the OpenAI SDK lazy-initialises `httpx.AsyncClient`, so per-call cost is low.
+  Documented as a known limitation in the ADR; revisit only if profiling shows
+  it is a bottleneck.
+
+Phase 14 (not Phase 5) is when these resources are actually threaded into
+`config["configurable"]` and consumed by nodes.
 
 This phase touches no agent nodes — it only extends the
 infrastructure they consume.
@@ -240,17 +267,48 @@ images to the correct `AIMessage` turn (FR-020).
   endpoint decorators in Phase 8/9 can pick them up.
 - On shutdown, close the S3 client and clear the cache.
 
+#### 5.8 Path A — Shared-resource injection foundation (NEW)
+
+Establish the `app.state` convention that Phase 14 (chat SSE) will
+consume. Only Qdrant had Path A wiring before this phase; this sub-task
+extends the same pattern to S3 and OpenAI so all expensive-to-construct
+clients are created once at startup and shared across requests.
+
+- **5.8.1 `app.state.s3`** — instantiate `S3Service(settings)` once in
+  `lifespan`. Call `await s3.ensure_bucket()` during startup (fail fast
+  if bucket missing — Terraform owns it, application must not create
+  it). Expose `s3.client` property so Phase 14 can inject it into
+  `config["configurable"]["s3_service"]`.
+
+- **5.8.2 `app.state.openai`** — instantiate `AsyncOpenAI(api_key=...)`
+  once in `lifespan`. This client is consumed by Phase 13 (DALL-E
+  image generation) via `OpenAIDep` in `dependencies.py`. **Not used
+  by LangChain `ChatOpenAI` nodes** (see ADR for the LangChain 1.2.2
+  limitation).
+
+- **5.8.3 Shutdown order** — close `app.state.openai` first (no
+  dependents), then `app.state.s3` (boto3 sync wrapped in
+  `asyncio.to_thread`), then the existing `cache_redis`, `valkey`,
+  `qdrant`, DB pools.
+
+- **5.8.4 What does NOT go on `app.state`** (rationale in ADR):
+  - `asyncpg.Pool` / `psycopg_pool` — already module-level singletons
+    in `app/db/session.py`.
+  - `ThreadRepository` / `ImageRepository` — thin asyncpg wrappers;
+    per-request construction is essentially free.
+  - `ChatOpenAI` instances — per-node pattern retained.
+
 ### Tests to Write
 
 | Test File | Test Cases |
 |---|---|
-| `tests/unit/services/test_s3_service.py` | `build_key` returns `images/{user_id}/{thread_id}/{timestamp}.png`; `delete` calls `s3.delete_object`; `ensure_bucket` returns silently when bucket exists, raises `BucketNotFound` (or wraps `ClientError` 404) when missing — never creates |
-| `tests/unit/services/test_valkey_service.py` | `increment_quota` first call returns 1 and sets TTL; subsequent calls increment; `delete_pattern` removes all matching keys via SCAN |
+| `tests/unit/services/test_s3_service.py` | `build_key` returns `images/{user_id}/{thread_id}/{timestamp}.png`; `delete` calls `s3.delete_object`; `ensure_bucket` returns silently when bucket exists, raises `BucketNotFound` (or wraps `ClientError` 404) when missing — never creates; `.client` and `.bucket` properties exposed |
+| `tests/unit/services/test_valkey_service.py` | `increment_quota` first call returns 1 and sets TTL; subsequent calls increment; `delete_pattern` removes all matching keys via SCAN; `get`/`set`/`delete`/`get_quota` round-trip |
 | `tests/unit/repositories/test_thread_repo.py` (extend) | `find_expired` returns only threads older than cutoff, excludes `deleting` |
 | `tests/unit/repositories/test_image_repo.py` | `delete_by_thread` cascade; `list_by_message_id` filters correctly; `count_by_user_date` returns count for that UTC day |
-| `tests/integration/test_lifespan.py` | Startup completes; `s3.ensure_bucket` called; slowapi + fastapi-cache2 globals populated |
-| `tests/integration/test_rate_limit.py` | 21st `POST /runs/stream` returns 429 within 1 minute; webhook + health exempt |
-| `tests/integration/test_thread_list_cache.py` | First call hits the repo (cache miss), second returns from Valkey; `delete_pattern('threads:{user_id}:*')` invalidates |
+| `tests/integration/test_lifespan.py` | Startup completes; `s3.ensure_bucket` called; `app.state.openai` initialised with correct API key; slowapi + fastapi-cache2 globals populated; shutdown closes all 5 clients in correct order (openai → s3 → cache_redis → valkey → qdrant → pools) |
+| `tests/integration/test_rate_limit.py` | 21st `POST /runs/stream` returns 429 within 1 minute; webhook + health exempt; per-user isolation; `Retry-After` header present |
+| `tests/integration/test_thread_list_cache.py` | First call hits the repo (cache miss), second returns from Valkey; `delete_pattern('threads:{user_id}:*')` invalidates; per-user key isolation; TTL expiry repopulates |
 
 ---
 
