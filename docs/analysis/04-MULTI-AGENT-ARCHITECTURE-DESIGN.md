@@ -242,7 +242,7 @@ exits. All routing happens via **conditional edges** defined on the parent `Stat
 node contains no branching logic or ReAct loop. `config["remaining_steps"]` is checked inside
 the node to force `intent = "fallback"` before the recursion budget is exhausted.
 
-**LLM**: `ORCHESTRATOR_MODEL` (default: `gpt-4o-mini`) — lightweight, cost-efficient for routing.
+**LLM**: `ORCHESTRATOR_MODEL` (default: `gpt-5.4-mini`) — lightweight, cost-efficient for routing.
 
 **Responsibilities**:
 - Read `config["remaining_steps"]`; if `<= AGENT_FALLBACK_THRESHOLD` force intent = `fallback`
@@ -355,7 +355,7 @@ def _build_trend_scout_system(
     return "\n".join(parts)
 ```
 
-**LLM**: `ORCHESTRATOR_MODEL` (default: `gpt-4o-mini`)
+**LLM**: `ORCHESTRATOR_MODEL` (default: `gpt-5.4-mini`)
 
 **Tools** (both defined as `@tool`):
 
@@ -613,7 +613,7 @@ access the full context via `state["summary"]`.
 
 **Pattern**: Plain `async def` function, runs as **parallel branch** on first run only
 
-**LLM**: `TITLE_MODEL` (default: `gpt-4o-mini`)
+**LLM**: `TITLE_MODEL` (default: `gpt-5.4-nano`)
 
 **Trigger condition**: `AgentState.title_generated == False` (checked at graph entry)
 
@@ -665,7 +665,7 @@ On any DALL-E error → emit SSE image_failed {reason: "generation_failed"}
 
 **Pattern**: Plain `async def` function with SSE streaming
 
-**LLM**: `RESPONSE_MODEL` (default: `gpt-4o`) — heavier model for quality responses
+**LLM**: `RESPONSE_MODEL` (default: `gpt-5.4`) — heavier model for quality responses
 
 **Flow**:
 ```
@@ -699,34 +699,52 @@ products are short structured data, not long documents).
 
 **Text content** (embedded as dense vector):
 ```python
-node_text = f"{product.name}\n\n{product_description_summary}"
+node_text = f"{product.name}\n\n{product_description_for_embedding}"
 ```
 
+**Two-track `description` rule** (FR-035 + FR-035a): the indexer maintains a
+**strict separation** between the description that gets embedded and the
+description that gets stored in the Qdrant metadata payload. They may differ
+in length when the cleaned description exceeds `DESCRIPTION_MAX_CHARS`.
+
+| Track | Variable | Value | Length |
+|---|---|---|---|
+| Embedding text (input to `EMBEDDING_MODEL`) | `product_description_for_embedding` | `cleaned_text` if `len(cleaned) <= DESCRIPTION_MAX_CHARS`, else `SUMMARIZE_MODEL(cleaned_text)` | Bounded by `DESCRIPTION_MAX_CHARS` (or less after summarization) |
+| Metadata payload (stored in Qdrant point, returned to `ResponseGeneratorNode` via `ProductPayload.description`) | `product_description_full` | `cleaned_text` (HTML-stripped, full length) | **Unbounded** — the full cleaned text |
+
 **Description handling**: Raw Saleor description can be long HTML/rich text. Before indexing:
-- Strip HTML tags
-- If `len(cleaned_text) > DESCRIPTION_MAX_CHARS`: summarize via LLM call using **`SUMMARIZE_MODEL`**
-  (new dedicated env var — NOT `ORCHESTRATOR_MODEL`) to extract core content + important keywords.
-  This improves embedding quality by removing filler and preserving semantic signal.
-- If `len(cleaned_text) <= DESCRIPTION_MAX_CHARS`: use as-is
+- Strip HTML tags → `cleaned_text`.
+- `cleaned_text` is stored verbatim in `metadata["description"]` (FR-035).
+- For the embedding text only: if `len(cleaned_text) > DESCRIPTION_MAX_CHARS` (default 500),
+  summarize via LLM call using **`SUMMARIZE_MODEL`** (new dedicated env var — NOT
+  `ORCHESTRATOR_MODEL`) to extract core content + important keywords.  This improves
+  embedding quality by removing filler and preserving semantic signal.  Otherwise use
+  `cleaned_text` as-is.
+- The metadata `description` is **never** summarized or truncated; only the embedding
+  text is.
 
 **Why a separate `SUMMARIZE_MODEL`?** Description summarization during ingestion is a batch,
 offline task (Celery worker context). It has different latency tolerance and cost profile from
-online routing tasks. A dedicated env var allows using a cheaper model (e.g. `gpt-4o-mini`) or
+online routing tasks. A dedicated env var allows using a cheaper model (e.g. `gpt-5.4-mini`) or
 a different provider without affecting online agents.
 
 **[RESOLVED Q-6]**: `DESCRIPTION_MAX_CHARS = 500`. Rationale: `text-embedding-3-small`
 performs best for retrieval at **128–512 tokens**. 500 characters ≈ 150–200 tokens after
 tokenization — within the optimal range. Descriptions longer than 500 characters are
 summarised by `SUMMARIZE_MODEL` to preserve key semantic signal without diluting the vector.
+The cap applies **only to the embedding text**; the metadata `description` is always full
+length so the `ResponseGeneratorNode` can re-frame the original product copy verbatim.
 
-**Metadata payload** stored in Qdrant point (used for metadata filtering):
+**Metadata payload** stored in Qdrant point (used for metadata filtering AND
+returned to the agent as `ProductPayload`):
 ```python
 TextNode(
-    text=node_text,  # embedded: name + description (plain text, possibly summarised)
+    text=node_text,  # embedded: name + (summary if long, else full) description
     id_=product.id,  # Saleor product ID as node_id (enables idempotent upserts)
     metadata={
         "product_id": product.id,
         "name": product.name,
+        "description": cleaned_text,                  # FULL cleaned text (no length cap)
         "slug": product.slug,
         "category": product.category.name,           # e.g. "T-Shirts"
         "collections": [c.name for c in product.collections],  # e.g. ["Spring 2025", "Sale"]
@@ -742,13 +760,20 @@ TextNode(
 ```
 
 **Field notes**:
+- `description` in metadata is the **full** cleaned text (HTML stripped, length not
+  bounded by `DESCRIPTION_MAX_CHARS`).  It is NEVER the summarized variant — the
+  `ProductPayload.description` field returned by Qdrant always matches the original
+  product copy.  Summarization only ever happens on the input side of the embedding
+  model.
 - `collections` replaces `tags`. Saleor has no native `tags` field on `Product`.
   Collections represent curated groupings (e.g. seasonal campaigns, promotions).
 - `price_min` / `price_max` are native float amounts from `pricing.priceRange`.
   `price_range` (string) is derived at ingestion for display; never used for filtering.
 - `saleor_url` is built at ingestion time using `SALEOR_STOREFRONT_URL` env var + `slug`.
-- `description` in `text=` is plain text: EditorJS JSON is parsed block by block,
-  concatenating `paragraph` and `header` block text values, then summarised if over threshold.
+- The text that gets embedded is plain text: EditorJS JSON is parsed block by block,
+  concatenating `paragraph` and `header` block text values, then summarised if over
+  `DESCRIPTION_MAX_CHARS`.  The metadata `description` receives the same block-by-block
+  concatenation **without** the summarization step.
 
 ### 3.2 IngestionPipeline
 
@@ -870,8 +895,8 @@ The following env vars are **new** — not yet present in `src/app/config.py` or
 |---|---|---|---|
 | `MESSAGE_SUMMARIZE_THRESHOLD` | `12` | `SummarizeNode` | Message count that triggers summarization |
 | `MESSAGE_SUMMARIZE_COUNT` | `8` | `SummarizeNode` | Number of oldest messages to summarize per run |
-| `RERANK_MODEL` | `gpt-4o-mini` | `llm_postprocess_node` | LLM for product reranking |
-| `SUMMARIZE_MODEL` | `gpt-4o-mini` | `ProfilerNode`, `SummarizeNode`, `ProductIndexer` (Celery) | LLM for profile extraction, message summarization, and product description summarization at ingestion |
+| `RERANK_MODEL` | `gpt-5.4-mini` | `llm_postprocess_node` | LLM for product reranking |
+| `SUMMARIZE_MODEL` | `gpt-5.4-mini` | `ProfilerNode`, `SummarizeNode`, `ProductIndexer` (Celery) | LLM for profile extraction, message summarization, and product description summarization at ingestion |
 | `QDRANT_SPARSE_TOP_K` | `12` | `hybrid_search_node` | Sparse BM25 candidate count |
 | `QDRANT_SIMILARITY_TOP_K` | `12` | `hybrid_search_node` | Dense vector candidate count |
 | `QDRANT_HYBRID_TOP_K` | `9` | `hybrid_search_node` | Post-fusion candidate count (input to LLM postprocess) |
@@ -914,5 +939,5 @@ These must be added to `Settings` in `config.py` before Phase 5 implementation b
   - Valkey pub/sub would be needed only if the app scaled to multiple uvicorn processes
     (workers) — not required at this stage.
 - **`RERANK_MODEL` and `SUMMARIZE_MODEL`** are separate from `ORCHESTRATOR_MODEL` and
-  `RESPONSE_MODEL`. All four can point to the same OpenAI model (e.g. `gpt-4o-mini`) by default,
+  `RESPONSE_MODEL`. All four can point to the same OpenAI model (e.g. `gpt-5.4-mini`) by default,
   but separating them enables independent cost/quality tuning per task.

@@ -1,32 +1,44 @@
-# Phase 4 — Project Scaffold & Infrastructure Setup
+# Project Scaffold & Infrastructure Setup
 
 **Project**: `agentic-rag-ecommerce` — AI POD Stylist & Recommendation System
-- **Version**: 1.0
-- **Date**: 2026-06-02
-- **Status**: Planned — Ready for implementation review
+- **Version**: 2.0
+- **Date**: 2026-06-11
+- **Status**: Reference — scaffold completed; document now describes what was built
 
-> This document covers all decisions and blueprints for Phase 4.
-> All package versions were verified against PyPI and Docker Hub on 2026-06-02.
-> Implement this phase before starting Phase 5 (Product RAG Engine).
+> This is a **reference document** describing the project scaffold (directory
+> structure, dependencies, Docker Compose, Alembic, pre-commit hooks) that the
+> application is built on. It is **not** a phase plan. For phase status and
+> remaining work, see [docs/05-IMPLEMENTATION-PLAN.md](../05-IMPLEMENTATION-PLAN.md).
+>
+> For the agent architecture and node designs, see
+> [docs/analysis/04-MULTI-AGENT-ARCHITECTURE-DESIGN.md](04-MULTI-AGENT-ARCHITECTURE-DESIGN.md).
+>
+> Originally the scaffold work was scoped under "Phase 4" of an older phase
+> numbering (1–13). The current implementation plan uses phases 1–14 where
+> Phase 4 = Product RAG; the scaffold is simply the foundation all phases
+> build on.
 
 ---
 
 ## 1. Objective
 
-Phase 4 establishes the full development foundation:
+The project scaffold establishes the full development foundation:
 
 - Repository structure with all module boundaries defined
 - Python dependency tree pinned to exact stable versions
-- Docker Compose stack (10 services) runnable locally with one command
-- Configuration system (`pydantic-settings`) loading all env vars from Phase 2 spec
+- Docker Compose stack (11 services) runnable locally with one command
+- Configuration system (`pydantic-settings`) loading all env vars from the spec
 - Health and readiness endpoints verifying all external connections
 - Saleor GraphQL client + JWKS client wired up
-- Qdrant service (collection creation, upsert, delete, search stubs)
+- Qdrant service (collection creation with hybrid dense + sparse config)
 - Pre-commit hooks (`ruff` + `pyright`) enforced on every commit
 - Integration test suite verifying all external connections work
 
-At the end of Phase 4, the system must boot, pass `/health` and `/ready`, connect to all 10
-services, and have an empty-but-compilable LangGraph graph. No agent logic is implemented yet.
+The system boots, passes `/health` and `/ready`, connects to all 11 services,
+and runs a compiled LangGraph graph with the full 8-node topology. Pipeline
+nodes (profiler, summarize, orchestrate, product_rag) are real; the rest
+(synthesize, generate_title, generate_image, trend_scout) are stubs awaiting
+the phases in [docs/05-IMPLEMENTATION-PLAN.md](../05-IMPLEMENTATION-PLAN.md).
 
 ---
 
@@ -44,11 +56,13 @@ agentic-rag-ecommerce/
 │   └── copilot-instructions.md
 │
 ├── docs/
-│   ├── PLAN.md
+│   ├── README.md                       # Documentation index
+│   ├── 05-IMPLEMENTATION-PLAN.md       # Master implementation plan
 │   ├── analysis/
 │   │   ├── 01-USE-CASE-ANALYSIS.md
 │   │   ├── 02-REQUIREMENTS-SPECIFICATION.md
-│   │   └── 03-PHASE4-PROJECT-SCAFFOLD.md   ← this file
+│   │   ├── 03-PROJECT-SCAFFOLD.md      # ← this file
+│   │   └── 04-MULTI-AGENT-ARCHITECTURE-DESIGN.md
 │   └── diagrams/
 │       ├── 01-use-case-overview.mermaid
 │       ├── 02-system-context.mermaid
@@ -83,31 +97,40 @@ agentic-rag-ecommerce/
 │       │   │
 │       │   ├── nodes/                 # Simple nodes — plain Python functions, no tool loop
 │       │   │   ├── __init__.py
-│       │   │   ├── generate_title.py    # LLM call + retry + SSE thread_title
-│       │   │   ├── profiler.py          # LLM call: profile merge from snapshot + message
-│       │   │   ├── orchestrate.py       # 4-intent routing + remaining_steps guard
-│       │   │   ├── synthesize.py        # LLM stream: synthesize + SSE token/products/done
-│       │   │   └── generate_image.py    # DALL-E + S3 upload + Valkey quota + SSE image_*
+│       │   │   ├── generate_title.py    # STUB — LLM call + retry + SSE thread_title (Phase 12)
+│       │   │   ├── profiler.py          # DONE — LLM merge from snapshot + message, AsyncPostgresStore
+│       │   │   ├── orchestrate.py       # DONE — 6-intent routing + remaining_steps guard
+│       │   │   ├── summarize.py         # DONE — threshold + RemoveMessage + SUMMARIZE_MODEL
+│       │   │   ├── synthesize.py        # STUB — SSE streaming (Phase 12)
+│       │   │   └── generate_image.py    # STUB — DALL-E + S3 + Valkey quota (Phase 13)
 │       │   │
-│       │   ├── subagents/             # Complex sub-agents with internal ReAct tool loops
+│       │   ├── subagents/             # Complex sub-agents with internal pipelines / ReAct loops
 │       │   │   ├── __init__.py
-│       │   │   ├── product_rag/       # ProductRAGAgent — LlamaIndex hybrid search sub-agent
+│       │   │   ├── product_rag/       # ProductRAGAgent — 3-stage LangGraph StateGraph
 │       │   │   │   ├── __init__.py
-│       │   │   │   ├── agent.py       # ReAct agent: query_rewrite -> search -> rerank
-│       │   │   │   └── tools.py       # @tool: rewrite_query, hybrid_search, filter_products
-│       │   │   └── trend_scout/       # TrendScoutAgent — web search + summarize sub-agent
+│       │   │   │   ├── agent.py       # Compiled subgraph + run_product_rag wrapper
+│       │   │   │   ├── nodes.py       # prepare_query_node, hybrid_search_node, llm_postprocess_node
+│       │   │   │   ├── state.py       # ProductRAGState TypedDict
+│       │   │   │   ├── schemas.py     # PrepareQueryOutput, structured-output schemas
+│       │   │   │   └── fault_tolerance.py  # RetryPolicy, TimeoutPolicy, error handlers
+│       │   │   └── trend_scout/       # TrendScoutNode — create_agent (LangChain) ReAct loop
 │       │   │       ├── __init__.py
-│       │   │       ├── agent.py       # ReAct agent: search -> summarize -> generate prompts
-│       │   │       └── tools.py       # @tool: tavily_search, duckduckgo_search
+│       │   │       ├── agent.py       # STUB — create_agent + run_trend_scout wrapper (Phase 11)
+│       │   │       └── tools.py       # STUB — @tool tavily_search, duckduckgo_search (Phase 11)
 │       │   │
-│       │   └── prompts/               # Externalized LLM prompt templates (Phase 7) — SKIP: deferred, not created yet
-│       │       ├── orchestrator_intent.md
-│       │       ├── profiler_merge.md
-│       │       ├── response_generator.md
-│       │       ├── title_generation.md
-│       │       ├── image_generation.md
-│       │       ├── product_rag_react.md
-│       │       └── trend_scout_react.md
+│       │   └── prompts/               # Externalized LLM prompt templates (11 .md files)
+│       │       ├── __init__.py            # load_prompt(name) helper
+│       │       ├── orchestrator_system.md
+│       │       ├── profiler_system.md
+│       │       ├── summarize_system.md
+│       │       ├── prepare_query_system.md
+│       │       ├── rerank_system.md
+│       │       ├── title_system.md
+│       │       ├── trend_scout_system.md
+│       │       ├── synthesize_sufficient_system.md
+│       │       ├── synthesize_clarification_system.md
+│       │       ├── synthesize_out_of_scope_system.md
+│       │       └── synthesize_fallback_system.md
 │       │
 │       ├── models/                    # Domain entities — shared across modules (not API-specific)
 │       │   ├── __init__.py
@@ -195,9 +218,10 @@ agentic-rag-ecommerce/
 │
 ├── docker/
 │   ├── app/
-│   │   └── Dockerfile
+│   │   ├── Dockerfile
+│   │   └── entrypoint.sh
 │   ├── promtail/
-│   │   └── config.yml
+│   │   └── config.yaml
 │   └── grafana/
 │       ├── datasources/
 │       │   └── datasources.yml
@@ -251,23 +275,22 @@ import only from `models/`. `schemas/` never imports from `agent/` or `tasks/`.
 
 ### agent/nodes/ vs agent/subagents/ — Node Type Classification
 
-> [NOTE] The illustrative names in the original spec (`title_generation.py`,
-> `orchestrator.py`, `response_generator.py`, `image_generation.py`) were updated
-> during Phase 4 implementation.  The table below reflects the **actual file names**
-> in the codebase.  The spec names are kept as comments for traceability.
-
 | File | Type | Pattern | Has tool loop? |
 |---|---|---|---|
-| `nodes/generate_title.py` | Simple node | Plain function | No | <!-- was: title_generation.py -->
-| `nodes/profiler.py` | Simple node | Plain function | No |
-| `nodes/orchestrate.py` | Simple node | Plain function | No | <!-- was: orchestrator.py -->
-| `nodes/synthesize.py` | Simple node | Plain function + LLM stream | No | <!-- was: response_generator.py -->
-| `nodes/generate_image.py` | Simple node | Plain function | No | <!-- was: image_generation.py -->
-| `subagents/product_rag/agent.py` | Sub-agent | LangChain ReAct | YES — query rewrite → search → rerank |
-| `subagents/trend_scout/agent.py` | Sub-agent | LangChain ReAct | YES — search → fallback → summarize |
+| `nodes/generate_title.py` | Simple node | Plain function | No |
+| `nodes/profiler.py` | Simple node | Plain function + LLM call | No |
+| `nodes/orchestrate.py` | Simple node | Plain function + LLM tool binding | No |
+| `nodes/summarize.py` | Simple node | Plain function + LLM call | No |
+| `nodes/synthesize.py` | Simple node | Plain function + LLM stream | No |
+| `nodes/generate_image.py` | Simple node | Plain function | No |
+| `subagents/product_rag/` | Sub-agent | **LangGraph `StateGraph`** (3 stages) | No internal loop — fixed pipeline |
+| `subagents/trend_scout/` | Sub-agent | **LangChain `create_agent`** | YES — ReAct tool-use loop |
 
-Both sub-agents expose a single entry-point function called by the LangGraph node wrapper
-in `graph.py`. The internal ReAct loop is hidden inside the sub-agent.
+Both sub-agents expose a single entry-point function called by the LangGraph
+node wrapper in `graph.py`.  For product_rag, the internal pipeline is a
+fixed 3-stage `StateGraph` (no LLM decision points).  For trend_scout, the
+internal pattern is a ReAct loop driven by `create_agent` so the LLM decides
+when to invoke the search tools.
 
 ---
 
@@ -674,11 +697,11 @@ services:
       - "3100:3100"
 
   promtail:
-    image: grafana/promtail:3.6.11
+    image: grafana/promtail:3.5.0
     volumes:
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./docker/promtail/config.yml:/etc/promtail/config.yml
+      - ./docker/promtail/config.yaml:/etc/promtail/config.yaml
     networks: [app-net]
     depends_on: [loki]
 ```
@@ -703,44 +726,55 @@ services:
 
 ### 4.4 Dockerfile
 
-> [NOTE — OUTDATED TEMPLATE] The multi-stage template below differs from the
-> **actual** `docker/app/Dockerfile`:
-> - Actual: single stage, `uv` copied from `ghcr.io/astral-sh/uv:latest` (no pinned version).
-> - Actual: exposes port **8080** (not 8000); `ENTRYPOINT` uses a shell script.
-> - Actual: copies `alembic/` and `alembic.ini` into the image.
-> Template is kept for reference only.
+The actual `docker/app/Dockerfile` is a single-stage build that:
+
+- Installs `libpq-dev` (required by `psycopg` binary and `cryptography`).
+- Copies `uv` from `ghcr.io/astral-sh/uv:latest` (no pinned version — the
+  image is rebuilt on every `uv` release, so a multi-stage layer pin
+  would cause stale caches).
+- Layer-caches dependencies by copying `pyproject.toml` and `uv.lock`
+  first and running `uv sync --frozen --no-dev` before any source.
+- Copies `src/`, `alembic/`, `alembic.ini`, and `docker/app/entrypoint.sh`.
+- Exposes **8080** and uses `/entrypoint.sh` as the entrypoint (the
+  entrypoint runs `alembic upgrade head` then `exec`s uvicorn — see note
+  in Section 8.7 about migration timing).
 
 ```dockerfile
-# docker/app/Dockerfile — TEMPLATE (actual file differs, see above note)
-FROM python:3.12-slim AS builder
+# docker/app/Dockerfile (actual)
+FROM python:3.12-slim
 
-WORKDIR /app
-
-RUN pip install uv==0.11.18
-
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
-
-# ── Runtime stage ──────────────────────────────────────────────────────────────
-FROM python:3.12-slim AS runtime
-
-WORKDIR /app
-
-# curl required for healthcheck
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
+# Install system dependencies required by psycopg binary and cryptography.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/.venv /app/.venv
-ENV PATH="/app/.venv/bin:$PATH"
+WORKDIR /app
 
+# Install uv for fast dependency installation.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Copy dependency manifests first for layer caching.
+COPY pyproject.toml uv.lock ./
+
+# Install production dependencies only (no dev extras).
+RUN uv sync --frozen --no-dev
+
+# Copy application source.
 COPY src/ ./src/
+COPY alembic/ ./alembic/
+COPY alembic.ini ./
 
-ENV PYTHONPATH="/app/src"
+# Copy Docker entrypoint script.
+COPY docker/app/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENV PYTHONPATH=/app/src
+ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-EXPOSE 8000
+EXPOSE 8080
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["/entrypoint.sh"]
 ```
 
 ---
@@ -749,25 +783,29 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 ### 5.1 .env.example
 
+The shipped `.env.example` matches the values in `.env` for local Docker
+Compose development.  All env vars are read by `src/app/config.py` and surfaced
+as `Settings` fields.
+
 ```dotenv
 # ── PostgreSQL ────────────────────────────────────────────────────────────────
-DATABASE_URL=postgresql+psycopg://app:changeme@localhost:5432/app
+DATABASE_URL=postgresql+psycopg://app:changeme@postgres:5432/app
 POSTGRES_DB=app
 POSTGRES_USER=app
 POSTGRES_PASSWORD=changeme
 
 # ── Qdrant ───────────────────────────────────────────────────────────────────
-QDRANT_URL=http://localhost:6333
+QDRANT_URL=http://qdrant:6333
 QDRANT_API_KEY=
 QDRANT_COLLECTION_NAME=products
 
 # ── Valkey (Redis-compatible) ─────────────────────────────────────────────────
-# DB 0 = rate limiting (slowapi), DB 1 = response cache (fastapi-cache2)
-VALKEY_URL=redis://localhost:6379
+# DB 0 = rate limiting (slowapi), DB 1 = response cache (fastapi-cache2), DB 2 = Celery results
+VALKEY_URL=redis://valkey:6379
 
 # ── Celery / RabbitMQ ─────────────────────────────────────────────────────────
-CELERY_BROKER_URL=amqp://guest:guest@localhost:5672//
-CELERY_RESULT_BACKEND=redis://localhost:6379/2
+CELERY_BROKER_URL=amqp://guest:guest@rabbitmq:5672//
+CELERY_RESULT_BACKEND=redis://valkey:6379/2
 RABBITMQ_USER=guest
 RABBITMQ_PASSWORD=guest
 
@@ -775,9 +813,11 @@ RABBITMQ_PASSWORD=guest
 OPENAI_API_KEY=sk-...
 
 # ── LLM Model Names ───────────────────────────────────────────────────────────
-RESPONSE_MODEL=gpt-4o
-ORCHESTRATOR_MODEL=gpt-4o-mini
-TITLE_MODEL=gpt-4o-mini
+RESPONSE_MODEL=gpt-5.4
+ORCHESTRATOR_MODEL=gpt-5.4-mini
+TITLE_MODEL=gpt-5.4-nano
+SUMMARIZE_MODEL=gpt-5.4-mini
+RERANK_MODEL=gpt-5.4-mini
 EMBEDDING_MODEL=text-embedding-3-small
 EMBEDDING_DIMS=1536
 
@@ -785,7 +825,7 @@ EMBEDDING_DIMS=1536
 TAVILY_API_KEY=tvly-...
 
 # ── Saleor ────────────────────────────────────────────────────────────────────
-SALEOR_URL=http://localhost:8080
+SALEOR_URL=http://host.docker.internal:8000
 SALEOR_APP_TOKEN=
 SALEOR_WEBHOOK_SECRET=changeme-32-char-secret
 
@@ -794,6 +834,20 @@ AWS_S3_BUCKET=
 AWS_ACCESS_KEY_ID=
 AWS_SECRET_ACCESS_KEY=
 AWS_REGION=ap-southeast-1
+
+# ── Message Summarization ────────────────────────────────────────────────────
+MESSAGE_SUMMARIZE_THRESHOLD=12
+MESSAGE_SUMMARIZE_COUNT=8
+
+# ── Qdrant Search Top-K ──────────────────────────────────────────────────────
+QDRANT_SPARSE_TOP_K=12
+QDRANT_SIMILARITY_TOP_K=12
+QDRANT_HYBRID_TOP_K=9
+QDRANT_RERANK_TOP_K=3
+
+# ── Ingestion ─────────────────────────────────────────────────────────────────
+DESCRIPTION_MAX_CHARS=500
+SALEOR_STOREFRONT_URL=
 
 # ── Agent Behavior ────────────────────────────────────────────────────────────
 MAX_AGENT_STEPS=10
@@ -819,6 +873,12 @@ LOG_LEVEL=INFO
 LANGSMITH_TRACING=false
 LANGSMITH_API_KEY=
 LANGSMITH_PROJECT=agentic-rag-ecommerce
+# LangSmith endpoint — choose the region matching your account:
+#   GCP US (default): https://api.smith.langchain.com
+#   GCP EU:           https://eu.api.smith.langchain.com
+#   GCP APAC:         https://apac.api.smith.langchain.com
+#   AWS US:           https://aws.api.smith.langchain.com
+LANGSMITH_ENDPOINT=https://aws.api.smith.langchain.com
 
 # ── Grafana (dev only) ────────────────────────────────────────────────────────
 GRAFANA_USER=admin
@@ -832,95 +892,120 @@ GRAFANA_PASSWORD=admin
 ### 6.1 `src/app/config.py` — Key Design Points
 
 - Single `Settings` class extending `pydantic_settings.BaseSettings`
-- `model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")`
+- `model_config = SettingsConfigDict(env_file=".env", extra="ignore")`
 - All fields have type annotations; required fields have no default
 - Computed properties for derived values (e.g., `valkey_rate_limit_url`, `valkey_cache_url`)
-- `@lru_cache` on `get_settings()` to avoid re-parsing on every dependency injection call
+- `@lru_cache(maxsize=1)` on `get_settings()` to avoid re-parsing on every dependency injection call
+
+The structure below is a faithful reproduction of the live `Settings` class
+(see [src/app/config.py](../../src/app/config.py) for the source of truth).
 
 ```python
-# Illustrative structure — full implementation in Phase 4
 from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
-    )
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Database
+    # ── PostgreSQL ──────────────────────────────────────────────────────────
     database_url: str
-    qdrant_url: str
+
+    # ── Qdrant ──────────────────────────────────────────────────────────────
+    qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str = ""
     qdrant_collection_name: str = "products"
-    valkey_url: str
 
-    # Celery
-    celery_broker_url: str
-    celery_result_backend: str
+    # ── Valkey / Redis ──────────────────────────────────────────────────────
+    valkey_url: str = "redis://localhost:6379"
 
-    # OpenAI
+    # ── Celery / RabbitMQ ───────────────────────────────────────────────────
+    celery_broker_url: str = "amqp://guest:guest@localhost:5672//"
+    celery_result_backend: str = "redis://localhost:6379/2"
+
+    # ── OpenAI ──────────────────────────────────────────────────────────────
     openai_api_key: str
-    response_model: str
-    orchestrator_model: str
-    title_model: str
+
+    # ── LLM Model Names ─────────────────────────────────────────────────────
+    response_model: str = "gpt-5.4"
+    orchestrator_model: str = "gpt-5.4-mini"
+    title_model: str = "gpt-5.4-mini"
     embedding_model: str = "text-embedding-3-small"
     embedding_dims: int = 1536
 
-    # Saleor
-    saleor_url: str
-    saleor_app_token: str
-    saleor_webhook_secret: str
+    # ── Tavily ──────────────────────────────────────────────────────────────
+    tavily_api_key: str = ""
 
-    # AWS S3
-    aws_s3_bucket: str
-    aws_access_key_id: str
-    aws_secret_access_key: str
-    aws_region: str
+    # ── Saleor ──────────────────────────────────────────────────────────────
+    saleor_url: str = "http://localhost:8080"
+    saleor_app_token: str = ""
+    saleor_webhook_secret: str   # min 32 chars (required)
 
-    # Search
-    tavily_api_key: str
+    # ── AWS S3 ──────────────────────────────────────────────────────────────
+    aws_s3_bucket: str = ""
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_region: str = "ap-southeast-1"
 
-    # Agent behavior
+    # ── Message Summarization ───────────────────────────────────────────────
+    message_summarize_threshold: int = 12
+    message_summarize_count: int = 8
+
+    # ── LLM Model Names (extended) ──────────────────────────────────────────
+    rerank_model: str = "gpt-5.4-mini"
+    summarize_model: str = "gpt-5.4-mini"
+
+    # ── Qdrant Search Top-K ─────────────────────────────────────────────────
+    qdrant_sparse_top_k: int = 12
+    qdrant_similarity_top_k: int = 12
+    qdrant_hybrid_top_k: int = 9
+    qdrant_rerank_top_k: int = 3
+
+    # ── Ingestion ───────────────────────────────────────────────────────────
+    description_max_chars: int = 500
+    saleor_storefront_url: str = ""
+
+    # ── Agent Behavior ──────────────────────────────────────────────────────
     max_agent_steps: int = 10
     agent_fallback_threshold: int = 2
     image_daily_limit: int = 10
 
-    # Thread naming
+    # ── Thread Auto-Naming ──────────────────────────────────────────────────
     title_generation_max_attempts: int = 3
     title_truncation_length: int = 50
 
-    # Rate limits
+    # ── Rate Limiting ───────────────────────────────────────────────────────
     rate_limit_chat: str = "20/minute"
     rate_limit_thread_create: str = "10/minute"
     rate_limit_read: str = "60/minute"
     rate_limit_write: str = "10/minute"
     rate_limit_reindex: str = "2/hour"
 
-    # Caching
+    # ── Caching ─────────────────────────────────────────────────────────────
     thread_list_cache_ttl: int = 120
 
-    # Observability
+    # ── Observability ───────────────────────────────────────────────────────
     log_level: str = "INFO"
     langsmith_tracing: bool = False
     langsmith_api_key: str = ""
     langsmith_project: str = "agentic-rag-ecommerce"
+    langsmith_endpoint: str = "https://aws.api.smith.langchain.com"
 
     @property
     def valkey_rate_limit_url(self) -> str:
+        """Valkey DB 0 — rate limiting (slowapi)."""
         return f"{self.valkey_url}/0"
 
     @property
     def valkey_cache_url(self) -> str:
+        """Valkey DB 1 — response cache (fastapi-cache2)."""
         return f"{self.valkey_url}/1"
 
 
-@lru_cache
+@lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    return Settings()
+    return Settings()   # type: ignore[call-arg]
 ```
 
 ---
@@ -1143,28 +1228,32 @@ alembic check
 
 ### 8.7 Startup Sequence (FastAPI lifespan)
 
+The actual startup sequence implemented in `src/app/main.py` (high-level):
+
 ```
-1. Load Settings (pydantic-settings)
-2. Configure structlog
-3. Setup OTel tracing (if LANGSMITH_TRACING=true)
-4. [MIGRATION] Run: alembic upgrade head  \u2190 before app boots (CI/CD or entrypoint script)
-5. Create asyncpg connection pool
-6. Initialize psycopg pool (for LangGraph)
-7. Call AsyncPostgresSaver.setup() \u2014 creates LangGraph tables (idempotent)
-8. Call AsyncPostgresStore.setup() \u2014 creates LangGraph store tables (idempotent)
-9. Compile LangGraph graph
-10. Initialize Qdrant client + ensure collection exists
-11. Initialize Valkey (redis) client
-12. Initialize Celery app
+1.  Load Settings (pydantic-settings, cached via @lru_cache)
+2.  Configure structlog JSON logging
+3.  Setup OTel tracing + LangSmith (no-op if LANGSMITH_TRACING=false)
+4.  Create asyncpg connection pool
+5.  Initialize psycopg pool (for LangGraph checkpointer/store)
+6.  Call AsyncPostgresSaver.setup() \u2014 creates LangGraph checkpoint tables (idempotent)
+7.  Call AsyncPostgresStore.setup() \u2014 creates LangGraph store tables (idempotent)
+8.  Compile LangGraph graph (8 nodes, see agent/graph.py)
+9.  Initialize Qdrant client + ensure_collection() (Section 10)
+10. Initialize Valkey (redis) client
+11. Initialize S3 client + ensure_bucket() (Phase 5.7)
+12. Initialize Celery app (for task scheduling)
 13. Start Prometheus instrumentation
-14. Yield (app is ready)
-15. [Shutdown] Close all pools and clients
+14. Yield (app is ready to serve traffic)
+15. [Shutdown] Close all pools, clients, and instrumentator
 ```
 
-> **Migration timing**: `alembic upgrade head` runs as a separate step **before** the app
-> starts \u2014 either in a Docker entrypoint script or as a dedicated `migrate` service in
-> Docker Compose. It does NOT run inside the FastAPI lifespan to avoid blocking startup
-> and to support zero-downtime deployments.
+> **Migration timing**: `alembic upgrade head` runs as a **separate step
+> before** the app starts \u2014 either in a Docker entrypoint script or as a
+> dedicated `migrate` step in the deployment pipeline. It is intentionally
+> NOT inside the FastAPI lifespan to keep startup fast and to support
+> zero-downtime deployments (a new pod can boot while migrations run
+> against the old schema).
 
 ---
 
@@ -1209,34 +1298,79 @@ repos:
 
 ## 10. Qdrant Collection Setup
 
-The `qdrant_service.py` must create the `products` collection on startup if it does not exist.
-The collection uses named vectors: `dense` (from OpenAI) and `sparse` (BM25 via FastEmbed).
+The `qdrant_service.py` creates the `products` collection on startup. The
+collection uses **named vectors** that match the LlamaIndex
+`QdrantVectorStore` defaults (`enable_hybrid=True`):
+
+- `text-dense`  — OpenAI embedding vector (size = `embedding_dims`,
+  distance = COSINE, HNSW m=16, ef_construct=100)
+- `text-sparse` — BM25 sparse vector (`on_disk=False`)
+
+`QdrantService.ensure_collection()` is **drop-and-recreate tolerant**: if
+the existing collection has a different `vectors_config` /
+`sparse_vectors_config` (e.g. legacy `dense` / `sparse` names from before
+Phase 4), it logs a warning and recreates the collection. This is safe
+because ingestion (Phase 5) has not run yet at the lifespan start of
+Phase 1–4.
 
 ```python
-# Illustrative — full implementation in Phase 4
+# Faithful reproduction of src/app/services/qdrant_service.py
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import (
+from qdrant_client.http.models import (
     Distance,
-    VectorParams,
-    SparseVectorParams,
+    HnswConfigDiff,
     SparseIndexParams,
+    SparseVectorParams,
+    VectorParams,
 )
 
-async def ensure_collection_exists(client: AsyncQdrantClient, settings: Settings) -> None:
-    exists = await client.collection_exists(settings.qdrant_collection_name)
-    if not exists:
-        await client.create_collection(
-            collection_name=settings.qdrant_collection_name,
+_DENSE_VECTOR_NAME = "text-dense"
+_SPARSE_VECTOR_NAME = "text-sparse"
+
+
+class QdrantService:
+    def __init__(self, settings: Settings) -> None:
+        self._collection = settings.qdrant_collection_name
+        self._dims = settings.embedding_dims
+        self._client = AsyncQdrantClient(
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key or None,
+        )
+
+    async def ensure_collection(self) -> None:
+        if not await self._client.collection_exists(self._collection):
+            await self._create_collection()
+            return
+
+        info = await self._client.get_collection(self._collection)
+        vectors = info.config.params.vectors
+        sparse_vectors = info.config.params.sparse_vectors
+
+        dense_ok = isinstance(vectors, dict) and _DENSE_VECTOR_NAME in vectors
+        sparse_ok = (
+            isinstance(sparse_vectors, dict)
+            and _SPARSE_VECTOR_NAME in sparse_vectors
+        )
+
+        if dense_ok and sparse_ok:
+            return   # already correct
+        await self._client.delete_collection(collection_name=self._collection)
+        await self._create_collection()
+
+    async def _create_collection(self) -> None:
+        await self._client.create_collection(
+            collection_name=self._collection,
             vectors_config={
-                "dense": VectorParams(
-                    size=settings.embedding_dims,
+                _DENSE_VECTOR_NAME: VectorParams(
+                    size=self._dims,
                     distance=Distance.COSINE,
-                )
+                    hnsw_config=HnswConfigDiff(m=16, ef_construct=100),
+                ),
             },
             sparse_vectors_config={
-                "sparse": SparseVectorParams(
-                    index=SparseIndexParams(on_disk=False)
-                )
+                _SPARSE_VECTOR_NAME: SparseVectorParams(
+                    index=SparseIndexParams(on_disk=False),
+                ),
             },
         )
 ```
@@ -1245,18 +1379,24 @@ async def ensure_collection_exists(client: AsyncQdrantClient, settings: Settings
 
 ## 11. Saleor GraphQL Client
 
-The `saleor_client.py` must implement two functions in Phase 4:
+The `saleor_client.py` is fully implemented and exposes:
 
-**Product fetch** (used in Phase 5 — just stub it in Phase 4):
-- `async def fetch_products_page(after: str | None) -> tuple[list[dict], str | None]`
-- Cursor-based paginated GraphQL query
-- Returns `(products, next_cursor)`
-
-**JWKS fetch** (required for auth in Phase 4):
-- `async def fetch_jwks() -> dict`  
-- `GET {SALEOR_URL}/.well-known/jwks.json`
-- Called at startup; cached in memory; refreshed on unknown `kid`
-- 30-second HTTP timeout; raises on non-200 status
+- `async def fetch_all_products(after: str | None = None) -> list[dict]`
+  - Cursor-based paginated GraphQL query over Saleor's `products` channel
+  - Returns raw Saleor product dicts (multiple pages fetched in one call
+    by paging internally)
+  - Used by `reindex_products` Celery task (Phase 8) and the admin
+    `/admin/reindex` endpoint
+- `def node_to_product_payload(node: dict) -> ProductItem`
+  - Mapper from Saleor's GraphQL product node to the `ProductItem`
+    domain model (used by RAG, agent state, and SSE)
+  - Strips HTML, truncates description to `description_max_chars`,
+    extracts `price_min`, `price_max`, `currency`, and the Saleor
+    `collections` slug list
+- `async def fetch_jwks() -> dict`
+  - `GET {SALEOR_URL}/.well-known/jwks.json`
+  - Called at startup; cached in memory; refreshed on unknown `kid`
+  - 30-second HTTP timeout; raises on non-200 status
 
 ---
 
@@ -1275,117 +1415,66 @@ All integration tests run against Docker Compose services (not mocked).
 
 ---
 
-## 13. Phase 4 Task Checklist
+## 13. Scaffold Verification Checklist
 
-Work through tasks in this order. Each task must pass `ruff` + `pyright` before moving on.
+The scaffold work described in this document is **complete** (Phases 1–4
+of the implementation plan). The checklist below is the operational
+verification a developer runs after `git clone` to confirm the scaffold
+is intact. It is **not** a future task list.
 
-### 13.1 Repository Init
+```bash
+# 1. Install + lockfile sync
+uv sync
 
-- [ ] Initialize project with `uv init` + `uv sync`
-- [ ] Create `pyproject.toml` with all pinned versions (Section 3.2)
-- [ ] Create `.env.example` (Section 5.1)
-- [ ] Create `.pre-commit-config.yaml` + `pyrightconfig.json` (Section 9)
-- [ ] Create `src/app/__init__.py` and set `PYTHONPATH=src`
-- [ ] Run `pre-commit install`
+# 2. Install pre-commit hooks
+pre-commit install
 
-### 13.2 Configuration
+# 3. Lint + format + type check
+ruff check .
+ruff format --check .
+pyright
 
-- [ ] Implement `src/app/config.py` (Section 6.1)
-- [ ] Verify all env vars load correctly from `.env`
-- [ ] Add `get_settings` to `src/app/dependencies.py`
+# 4. Database migration (run before first boot)
+alembic upgrade head
 
-### 13.3 Observability Bootstrap
+# 5. Bring up the full stack
+docker compose up -d
 
-- [ ] Implement `src/app/observability/logging.py` — structlog JSON processor chain
-- [ ] Implement `src/app/observability/tracing.py` — OTel init (no-op if tracing disabled)
-- [ ] Call both in FastAPI lifespan before any other setup
+# 6. Verify all 11 services are healthy
+docker compose ps
 
-### 13.4 Database Layer
+# 7. Hit the health endpoints
+curl -f http://localhost:8080/health      # 200 ok
+curl -f http://localhost:8080/ready       # 200 ok
+curl -f http://localhost:8080/metrics     # 200 prometheus format
 
-- [ ] Implement `src/app/db/session.py` — asyncpg pool + psycopg pool factories
-- [ ] Initialize Alembic: `alembic init alembic` — configure `env.py` (Section 8.4)
-- [ ] Write `alembic/versions/0001_initial_schema.py` (Section 8.5)
-- [ ] Verify migration runs: `alembic upgrade head`
-- [ ] Verify rollback works: `alembic downgrade -1`, then `alembic upgrade head` again
-- [ ] Implement `src/app/repositories/thread_repo.py` — CRUD stubs
-- [ ] Implement `src/app/repositories/image_repo.py` — CRUD stubs
+# 8. Inspect observability stack
+open http://localhost:3000                # Grafana (admin / admin)
+open http://localhost:15672               # RabbitMQ management (guest / guest)
 
-### 13.5 External Service Clients
+# 9. Run the integration suite against the live stack
+pytest tests/integration/ -v
 
-- [ ] Implement `src/app/services/qdrant_service.py` — client init + collection setup
-- [ ] Implement `src/app/services/valkey_service.py` — ping + basic key ops
-- [ ] Implement `src/app/services/saleor_client.py` — JWKS fetch + product fetch stub
-- [ ] Implement `src/app/services/s3_service.py` — boto3 client init stub
+# 10. Confirm the compiled LangGraph graph imports cleanly
+uv run python -c "from app.agent.graph import build_graph; g = build_graph(); print(g)"
+```
 
-### 13.6 Auth
-
-- [ ] Implement `src/app/auth/jwt_verifier.py` — JWKS cache + RS256 verify
-- [ ] Implement `src/app/auth/hmac_verifier.py` — `hmac.compare_digest` wrapper
-
-### 13.7 FastAPI App + Endpoints
-
-- [ ] Implement `src/app/main.py` — app factory + full lifespan (Section 8.7)
-- [ ] Implement `src/app/api/health.py` — `/health` and `/ready` (Section 7)
-- [ ] Wire Prometheus metrics via `prometheus-fastapi-instrumentator`
-- [ ] Register router in `src/app/api/router.py`
-
-### 13.8 Domain Models
-
-- [ ] Create `src/app/models/product.py` — `ProductItem` Pydantic model
-- [ ] Create `src/app/models/profile.py` — `UserProfile` Pydantic model
-- [ ] Create `src/app/models/thread.py` — `ThreadStatus` enum + `Thread` model
-- [ ] Create `src/app/models/image.py` — `GeneratedImage` model
-
-### 13.9 Agent Scaffold
-
-- [ ] Define `src/app/agent/state.py` — `AgentState` TypedDict (references `models/`)
-- [ ] Create stub files in `src/app/agent/nodes/` — 5 nodes, each returns `AgentState` unchanged
-- [ ] Create stub directories `src/app/agent/subagents/product_rag/` and `trend_scout/` with empty `agent.py` + `tools.py`
-- [ ] Implement `src/app/agent/graph.py` — empty but compilable LangGraph graph with all 7 node stubs wired
-- [ ] Call `await checkpointer.setup()` and `await store.setup()` in lifespan
-
-### 13.10 Celery Scaffold
-
-- [ ] Implement `src/app/tasks/celery_app.py` — app factory + Beat schedule placeholder
-- [ ] Create stub task files (`webhook_task`, `reindex_task`, `cleanup_task`)
-
-### 13.11 Docker Compose
-
-- [ ] Write `docker-compose.yml` (Section 4.2)
-- [ ] Write `docker-compose.override.yml` (Section 4.3)
-- [ ] Write `docker/app/Dockerfile` (Section 4.4)
-- [ ] Write `docker/promtail/config.yml` — basic Docker log scraping config
-- [ ] Write `docker/grafana/datasources/datasources.yml` — Prometheus + Loki
-- [ ] Verify `docker compose up --build` starts all 11 services without errors
-
-### 13.12 Integration Tests
-
-- [ ] Write `tests/conftest.py` with async client fixture and Docker service fixtures
-- [ ] Write all integration tests from Section 12
-- [ ] All integration tests pass against live Docker Compose stack
-
-### 13.13 Final Validation
-
-- [ ] `ruff check src/ tests/` — zero errors
-- [ ] `pyright src/` — zero errors
-- [ ] `alembic check` — DB matches head revision
-- [ ] `pytest tests/integration/ -v` — all pass
-- [ ] `GET /health` → 200
-- [ ] `GET /ready` → 200
-- [ ] `GET /metrics` → 200 with Prometheus format
-- [ ] `docker compose ps` — all 11 services healthy
+If any of the above fail, compare the failing component against the
+sections in this document and against the live source in `src/app/`.
 
 ---
 
-## 14. Out of Scope for Phase 4
+## 14. Out of Scope for the Scaffold
 
-The following are explicitly deferred to later phases:
+The scaffold is the foundation. Everything below belongs to a later
+phase in [docs/05-IMPLEMENTATION-PLAN.md](../05-IMPLEMENTATION-PLAN.md)
+and is documented there:
 
-- Actual agent node logic (Phase 7)
-- LlamaIndex indexing pipeline (Phase 5)
-- SSE streaming endpoint full implementation (Phase 6)
+- RAG indexing pipeline (Phase 5)
+- Full agent node logic — synthesize, generate_title, generate_image,
+  trend_scout (Phases 11–13)
 - Webhook processing logic (Phase 8)
 - Rate limiting + caching wiring (Phase 6)
 - LangSmith trace verification (Phase 9)
 - Security review of JWT expiry, HMAC timing (Phase 10)
-- Coverage enforcement above scaffold (Phase 11)
+- Coverage enforcement above the 80% baseline (Phase 11)

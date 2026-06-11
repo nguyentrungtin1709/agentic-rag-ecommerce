@@ -16,7 +16,7 @@ sequenceDiagram
     participant Logger as Structured Logger (structlog)
 
     Saleor->>API: POST /webhooks/saleor
-    Note over Saleor,API: Headers: X-Saleor-Signature: {hmac}<br/>Body: {event_type, product: {...}}
+    Note over Saleor,API: Headers: Saleor-Signature: {hmac}<br/>Body: {event_type, product: {...}}
 
     API->>HMAC: Validate HMAC-SHA256 signature
     Note over API,HMAC: constant-time comparison(HMAC-SHA256(body, SALEOR_WEBHOOK_SECRET), header_value)
