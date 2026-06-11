@@ -7,6 +7,7 @@ from ``app.db.session.get_asyncpg_pool()``.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 import asyncpg
 import structlog
@@ -253,3 +254,30 @@ class ThreadRepository:
         if deleted:
             logger.info("Thread deleted", thread_id=str(thread_id), user_id=user_id)
         return deleted
+
+    async def find_expired(self, cutoff: datetime) -> list[uuid.UUID]:
+        """Return IDs of threads whose last activity is older than ``cutoff``.
+
+        Used by the periodic cleanup job (Phase 10) to select threads
+        for hard-deleting after the 30-day inactivity window (FR-018).
+        Excludes threads already in ``status='deleting'`` so a second
+        job invocation cannot race the first to produce duplicate work.
+
+        Args:
+            cutoff: Threshold timestamp; threads with
+                ``last_activity_at < cutoff`` are returned.
+
+        Returns:
+            List of thread UUIDs eligible for cleanup.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id
+                FROM threads
+                WHERE last_activity_at < $1
+                  AND status != 'deleting'
+                """,
+                cutoff,
+            )
+        return [row["id"] for row in rows]

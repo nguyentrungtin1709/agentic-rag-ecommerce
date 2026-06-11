@@ -11,10 +11,14 @@ from fastapi import APIRouter, HTTPException, Request, status
 
 from app.auth.hmac_verifier import verify_webhook_signature
 from app.config import get_settings
+from app.rate_limit import get_limiter
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+
+# Resolved at import time (see ``app/api/health.py`` for rationale).
+_limiter = get_limiter()
 
 _SIGNATURE_HEADER = "Saleor-Signature"
 
@@ -24,6 +28,7 @@ _SIGNATURE_HEADER = "Saleor-Signature"
     status_code=status.HTTP_200_OK,
     summary="Receive Saleor product lifecycle webhook events",
 )
+@_limiter.exempt
 async def receive_saleor_webhook(request: Request) -> dict:
     """Validate the HMAC-SHA256 signature and enqueue a Celery task.
 

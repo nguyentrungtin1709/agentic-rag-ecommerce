@@ -14,6 +14,7 @@ import jwt
 import structlog
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from openai import AsyncOpenAI
 
 from app.auth.jwt_verifier import verify_token
 from app.config import Settings, get_settings
@@ -21,6 +22,7 @@ from app.db.session import get_asyncpg_pool
 from app.repositories.image_repo import ImageRepository
 from app.repositories.thread_repo import ThreadRepository
 from app.services.qdrant_service import QdrantService
+from app.services.s3_service import S3Service
 from app.services.valkey_service import ValkeyService
 
 logger = structlog.get_logger(__name__)
@@ -138,5 +140,22 @@ def get_valkey_service(request: Request) -> ValkeyService:
     return request.app.state.valkey
 
 
+def get_s3_service(request: Request) -> S3Service:
+    """Return the ``S3Service`` singleton from app state (Phase 5.8)."""
+    return request.app.state.s3
+
+
+def get_openai_client(request: Request) -> AsyncOpenAI:
+    """Return the ``AsyncOpenAI`` singleton from app state (Phase 5.8).
+
+    Consumed by the image-generation node (Phase 13) for DALL-E.
+    Stored as a bare ``AsyncOpenAI``; no wrapper class (see
+    ``history/5_0_0_SHARED_RESOURCE_INJECTION.md`` ADR D5.7).
+    """
+    return request.app.state.openai
+
+
 QdrantDep = Annotated[QdrantService, Depends(get_qdrant_service)]
 ValkeyDep = Annotated[ValkeyService, Depends(get_valkey_service)]
+S3Dep = Annotated[S3Service, Depends(get_s3_service)]
+OpenAIDep = Annotated[AsyncOpenAI, Depends(get_openai_client)]

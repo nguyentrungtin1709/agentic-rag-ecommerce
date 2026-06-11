@@ -19,6 +19,8 @@ from typing import Any
 
 import jwt
 import structlog
+from fastapi import Request
+from slowapi.util import get_remote_address
 
 logger = structlog.get_logger(__name__)
 
@@ -75,3 +77,41 @@ async def verify_token(token: str, saleor_url: str) -> dict[str, Any]:
         issuer=saleor_url,
     )
     return payload
+
+
+def get_jwt_user_id_or_ip(request: Request) -> str:
+    """Return the JWT ``sub`` claim if a Bearer token is present.
+
+    Used as the slowapi ``key_func`` so each authenticated user has
+    their own rate-limit bucket (FR-091). Falls back to the client
+    IP address when no token is present or the token cannot be
+    decoded — the route's own authentication dependency rejects
+    invalid tokens with 401 before the rate limiter matters.
+
+    Security note: the ``sub`` claim is read from an unverified
+    decode. This is acceptable for rate-limit bucketing because (a)
+    the rate limit is not a security boundary and (b) the route's
+    real authentication dependency enforces the actual identity check
+    with the full RS256 verification path.
+
+    Args:
+        request: Incoming FastAPI request.
+
+    Returns:
+        User ID from the JWT ``sub`` claim, or the remote address
+        as a fallback.
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return get_remote_address(request)
+    token = auth.removeprefix("Bearer ").strip()
+    try:
+        unverified = jwt.decode(token, options={"verify_signature": False})
+        sub = unverified.get("sub")
+        if sub:
+            return str(sub)
+    except Exception as exc:
+        # Malformed token: fall back to IP. The route's auth
+        # dependency will reject the request with 401.
+        logger.debug("Rate-limit key: unverified JWT decode failed", error=str(exc))
+    return get_remote_address(request)

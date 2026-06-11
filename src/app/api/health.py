@@ -20,11 +20,17 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 
 from app.db.session import get_asyncpg_pool
+from app.rate_limit import get_limiter
 from app.schemas.common import HealthResponse
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(tags=["health"])
+
+# Resolve the limiter once at import time. The singleton pattern in
+# ``app.rate_limit`` ensures tests that clear the limiter can rebuild
+# it before the next decorator evaluation.
+_limiter = get_limiter()
 
 
 @router.get(
@@ -32,11 +38,13 @@ router = APIRouter(tags=["health"])
     summary="Liveness probe",
     response_model=HealthResponse,
 )
+@_limiter.exempt
 async def health() -> JSONResponse:
     """Liveness probe — returns 200 when the service process is running.
 
     No external dependency checks are performed.  This endpoint must
     always return 200 as long as the FastAPI process is alive (FR-105).
+    Exempt from rate limiting per FR-094.
     """
     return JSONResponse(
         status_code=status.HTTP_200_OK,
@@ -49,12 +57,14 @@ async def health() -> JSONResponse:
     summary="Readiness probe",
     response_model=HealthResponse,
 )
+@_limiter.exempt
 async def ready(request: Request) -> JSONResponse:
     """Readiness probe — checks all external infrastructure dependencies.
 
     Returns 200 when PostgreSQL, Qdrant, and Valkey are all reachable.
     Returns 503 when any dependency is down, along with a ``checks``
-    dict identifying which service(s) failed (FR-106).
+    dict identifying which service(s) failed (FR-106). Exempt from
+    rate limiting per FR-094.
     """
     checks: dict[str, bool] = {}
 
