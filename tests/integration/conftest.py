@@ -34,6 +34,13 @@ VALKEY_URL: str = os.environ.get("VALKEY_TEST_URL", "redis://localhost:6380")
 SALEOR_URL: str = os.environ.get("SALEOR_TEST_URL", "http://localhost:8000")
 APP_URL: str = os.environ.get("APP_TEST_URL", "http://localhost:8080")
 
+# Override the .env-loaded QDRANT_URL (which points at the Docker-internal
+# ``qdrant`` hostname) so application code that calls ``get_settings()``
+# (e.g. ``ProductIndexer`` in the round-trip test) sees a host-reachable
+# URL when pytest runs outside the Docker network.  Only set when the
+# caller has not explicitly provided one.
+os.environ.setdefault("QDRANT_URL", QDRANT_URL)
+
 
 @pytest.fixture(scope="session")
 def postgres_dsn() -> str:

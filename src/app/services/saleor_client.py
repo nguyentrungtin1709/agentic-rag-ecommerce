@@ -35,12 +35,8 @@ query Products($first: Int!, $after: String) {
         category {
           name
         }
-        collections(first: 10) {
-          edges {
-            node {
-              name
-            }
-          }
+        collections {
+          name
         }
         pricing {
           priceRange {
@@ -62,6 +58,43 @@ query Products($first: Int!, $after: String) {
           url
         }
       }
+    }
+  }
+}
+"""
+
+_PRODUCT_BY_ID_QUERY = """
+query ProductById($id: ID!) {
+  product(id: $id, channel: "default-channel") {
+    id
+    name
+    slug
+    description
+    isAvailable
+    category {
+      name
+    }
+    collections {
+      name
+    }
+    pricing {
+      priceRange {
+        start {
+          gross {
+            amount
+            currency
+          }
+        }
+        stop {
+          gross {
+            amount
+            currency
+          }
+        }
+      }
+    }
+    thumbnail(size: 512, format: WEBP) {
+      url
     }
   }
 }
@@ -142,11 +175,19 @@ class SaleorClient:
         currency: str = str(start_gross.get("currency") or "USD")
 
         slug: str = node.get("slug") or ""
-        collections: list[str] = [
-            edge["node"]["name"]
-            for edge in ((node.get("collections") or {}).get("edges") or [])
-            if edge.get("node", {}).get("name")
-        ]
+        # Saleor returns collections as a flat list of ``Collection`` objects
+        # (no ``edges`` wrapper).  The fallback handles older or future
+        # schemas that may still wrap in a connection.
+        raw_collections = node.get("collections") or []
+        if (
+            raw_collections
+            and isinstance(raw_collections[0], dict)
+            and "node" in raw_collections[0]
+        ):
+            names = [edge["node"].get("name") for edge in raw_collections]
+        else:
+            names = [c.get("name") for c in raw_collections]
+        collections: list[str] = [n for n in names if n]
 
         return ProductPayload(
             product_id=node["id"],
@@ -163,6 +204,61 @@ class SaleorClient:
             saleor_url=f"{storefront_url}/products/{slug}/" if slug else "",
             thumbnail_url=(node.get("thumbnail") or {}).get("url") or "",
         )
+
+    async def fetch_products_by_ids(self, product_ids: list[str]) -> list[dict[str, Any]]:
+        """Re-fetch a list of products by their Saleor IDs.
+
+        Used by the Celery ``process_batch`` worker to fetch the
+        specific products assigned to its batch (avoids a wasteful
+        full-catalogue re-fetch per batch).
+
+        Saleor's GraphQL ``Product`` type exposes a single ``id`` filter
+        argument.  This implementation sends one query per ID — this
+        is a deliberate trade-off:
+
+        - 100 IDs / 1 batch = 100 round-trips per worker.  Acceptable
+          for batches of 100; the per-request payload is small and
+          the requests are independent so they can be made in
+          parallel if needed in a future optimisation.
+        - A single ``filter: { ids: [...] }`` query is not part of
+          Saleor's stable API surface and varies between versions;
+          per-ID queries are stable and predictable.
+
+        If any individual query fails, the whole call raises — the
+        worker treats that as a transient error and retries.
+
+        Args:
+            product_ids: Saleor product IDs to fetch.
+
+        Returns:
+            List of raw product ``node`` dicts in the same order as
+            ``product_ids`` (any ID with no matching product is
+            silently dropped from the result).
+        """
+        if not product_ids:
+            return []
+
+        results: list[dict[str, Any]] = []
+        for pid in product_ids:
+            response = await self._http.post(
+                "",
+                json={
+                    "query": _PRODUCT_BY_ID_QUERY,
+                    "variables": {"id": pid},
+                },
+            )
+            response.raise_for_status()
+            data: dict[str, Any] = response.json()
+            node = (data.get("data") or {}).get("product")
+            if node is not None:
+                results.append(node)
+
+        logger.info(
+            "Saleor products fetched by ids",
+            requested=len(product_ids),
+            returned=len(results),
+        )
+        return results
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

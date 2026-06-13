@@ -20,6 +20,10 @@ from app.auth.jwt_verifier import verify_token
 from app.config import Settings, get_settings
 from app.db.session import get_asyncpg_pool
 from app.repositories.image_repo import ImageRepository
+from app.repositories.ingestion_repo import (
+    IngestionBatchRepository,
+    IngestionJobRepository,
+)
 from app.repositories.thread_repo import ThreadRepository
 from app.services.qdrant_service import QdrantService
 from app.services.s3_service import S3Service
@@ -50,9 +54,15 @@ async def get_current_user(
 ) -> dict:
     """Validate the Bearer JWT and return the decoded claims.
 
+    The ``iss`` claim is verified against ``settings.saleor_jwt_issuer``
+    when set, falling back to ``settings.saleor_url`` for backwards
+    compatibility.  This split lets the application fetch the JWKS from
+    a Docker-internal alias (e.g. ``host.docker.internal``) while still
+    validating the user-visible ``iss`` URL set by Saleor.
+
     Args:
         credentials: Extracted by ``HTTPBearer`` from the Authorization header.
-        settings: Application settings for ``saleor_url``.
+        settings: Application settings for ``saleor_url`` and JWT issuer.
 
     Returns:
         Decoded JWT payload dict.
@@ -61,7 +71,11 @@ async def get_current_user(
         HTTPException: 401 if the token is invalid or expired.
     """
     try:
-        return await verify_token(credentials.credentials, settings.saleor_url)
+        return await verify_token(
+            credentials.credentials,
+            settings.saleor_url,
+            issuer=settings.saleor_jwt_issuer or None,
+        )
     except jwt.PyJWTError as exc:
         logger.warning("JWT verification failed", error=str(exc))
         raise HTTPException(
@@ -123,8 +137,32 @@ def get_image_repo(pool: PoolDep) -> ImageRepository:
     return ImageRepository(pool)
 
 
+def get_ingestion_job_repo(pool: PoolDep) -> IngestionJobRepository:
+    """Construct an ``IngestionJobRepository`` scoped to the current request.
+
+    Used by the admin ``POST /admin/reindex`` and
+    ``GET /admin/reindex/{job_id}`` endpoints (Phase 6).  Celery
+    worker tasks construct this class directly via
+    :func:`app.db.session.get_asyncpg_pool` because they run outside
+    the FastAPI app context where ``Depends`` is unavailable.
+    """
+    return IngestionJobRepository(pool)
+
+
+def get_ingestion_batch_repo(pool: PoolDep) -> IngestionBatchRepository:
+    """Construct an ``IngestionBatchRepository`` scoped to the current request.
+
+    Used by the admin ``GET /admin/reindex/{job_id}`` endpoint to list
+    per-batch status.  Celery worker tasks construct this class
+    directly via :func:`app.db.session.get_asyncpg_pool`.
+    """
+    return IngestionBatchRepository(pool)
+
+
 ThreadRepoDep = Annotated[ThreadRepository, Depends(get_thread_repo)]
 ImageRepoDep = Annotated[ImageRepository, Depends(get_image_repo)]
+IngestionJobRepoDep = Annotated[IngestionJobRepository, Depends(get_ingestion_job_repo)]
+IngestionBatchRepoDep = Annotated[IngestionBatchRepository, Depends(get_ingestion_batch_repo)]
 
 
 # ── Services ──────────────────────────────────────────────────────────────────

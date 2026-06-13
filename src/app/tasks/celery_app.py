@@ -27,8 +27,26 @@ celery_app = Celery(
         "app.tasks.reindex_products",
         "app.tasks.cleanup_expired_threads",
         "app.tasks.delete_thread",
+        "app.tasks.run_ingestion_job",
+        "app.tasks.process_batch",
     ],
 )
+
+
+# ── DB pool management in Celery workers ─────────────────────────────────────
+#
+# FastAPI's ``lifespan`` opens the pools in the API process.  The Celery
+# worker is a separate process with no lifespan hook, so tasks open and
+# close the pool themselves (see ``app.db.session``).
+#
+# Why NOT use ``worker_process_init`` to pre-open the pool: asyncpg binds
+# connections to the running event loop at creation time.  Each
+# ``asyncio.run()`` in a task creates a fresh loop, so a pool created in
+# one loop is dead by the time the next ``asyncio.run()`` runs in the same
+# process — surfaces as ``got Future ... attached to a different loop``.
+# The fix: each task's ``asyncio.run(coro())`` opens the pool on entry
+# (idempotent — reuses the existing module-level pool when it was opened
+# on the same loop) and closes it on exit.
 
 celery_app.conf.update(
     task_serializer="json",
@@ -51,6 +69,7 @@ celery_app.conf.update(
         Queue("celery", durable=True),
         Queue("webhook", durable=True),
         Queue("reindex", durable=True),
+        Queue("reindex_batches", durable=True),
         Queue("cleanup", durable=True),
     ],
     task_default_queue="celery",

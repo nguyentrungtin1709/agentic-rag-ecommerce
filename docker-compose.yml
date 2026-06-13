@@ -38,7 +38,7 @@ services:
       context: .
       dockerfile: docker/app/Dockerfile
     container_name: agentic-rag-celery-worker
-    command: ["celery", "-A", "app.tasks.celery_app", "worker", "--loglevel=info", "--queues=webhook,reindex,cleanup", "--concurrency=4"]
+    command: ["celery", "-A", "app.tasks.celery_app", "worker", "--loglevel=info", "--queues=webhook,reindex,reindex_batches,cleanup", "--concurrency=4"]
     env_file: .env
     extra_hosts:
       - "host.docker.internal:host-gateway"

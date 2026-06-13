@@ -28,6 +28,7 @@ dependencies = [
     "psycopg-pool==3.3.1",
     "asyncpg==0.31.0",
     "qdrant-client==1.18.0",
+    "fastembed>=0.7,<1.0",
     # Migrations (raw SQL via op.execute — no ORM models)
     "alembic==1.18.4",
     # Cache / Tasks

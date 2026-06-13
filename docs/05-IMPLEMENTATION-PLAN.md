@@ -14,7 +14,7 @@
 > - `[DONE]` — implementation complete, tests passing
 > - `[PENDING]` — work not yet started
 >
-> Phases 1–4 are `[DONE]`.  Phases 5–14 are `[PENDING]`.
+> Phases 1–6 are `[DONE]`.  Phases 7–14 are `[PENDING]`.
 
 ---
 
@@ -86,8 +86,8 @@ webhook → Celery dispatch chain, (e) the cleanup Celery tasks, and
 | 2 | Profile + Memory Management | ProfilerNode, SummarizeNode | DONE |
 | 3 | Orchestration | OrchestratorNode, conditional routing | DONE |
 | 4 | Product RAG | ProductRAGAgent subgraph + hybrid search | DONE |
-| 5 | Cross-cutting wiring + Repo/Service enhancements | slowapi, fastapi-cache2, S3Service/ValkeyService/Repository extensions | PENDING |
-| 6 | RAG Ingestion | ProductIndexer real, reindex_products Celery task, delete `rag/retriever.py` | PENDING |
+| 5 | Cross-cutting wiring + Repo/Service enhancements | slowapi, fastapi-cache2, S3Service/ValkeyService/Repository extensions | DONE |
+| 6 | RAG Ingestion | ProductIndexer real, reindex_products Celery task, delete `rag/retriever.py` | DONE |
 | 7 | Webhook handling | `api/webhooks.py` Celery dispatch, `process_webhook` task real | PENDING |
 | 8 | Thread Management API | 5 thread endpoints + history + status guards + cache invalidation | PENDING |
 | 9 | Profile + Admin API | 3 admin endpoints (profile, reindex, all threads) | PENDING |
@@ -135,6 +135,21 @@ See `temp/phase-4-product-rag.md`.
 ---
 
 ## Phase 5 — Cross-cutting wiring + Repo/Service enhancements + Path A foundation
+
+Status:  SlowAPI (per-user `get_jwt_user_id_or_ip` key, exempt on
+health/ready/webhooks), FastAPI cache2 (`ValkeyBackend`, custom
+`thread_list_key_builder`), S3Service (`build_key`, `aupload_image`,
+`delete`, `ensure_bucket` — never `create_bucket`), ValkeyService
+(`increment_quota`, `delete_pattern` via SCAN), ThreadRepository
+(`find_expired`), ImageRepository (`delete_by_thread`,
+`list_by_message_id`, `count_by_user_date`), Path A shared-resource
+injection (`app.state.s3`, `app.state.openai`, shutdown order locked
+in `history/5_0_0_SHARED_RESOURCE_INJECTION.md`).  206 tests passing
+(Docker stack running), 77% coverage — gap is in Phase 6+ code
+(`rag/`, `tasks/reindex_*`, `saleor_client`, `schemas/api`,
+`schemas/webhook`, `app/api/threads`, `app/api/webhooks`,
+`models/product`).  See `temp/phase-5-cross-cutting-wiring.md` for
+the full implementation log.
 
 ### Objective
 
@@ -312,7 +327,23 @@ clients are created once at startup and shared across requests.
 
 ---
 
-## Phase 6 — RAG Ingestion
+## Phase 6 — RAG Ingestion — DONE
+
+Status:  `ProductIndexer` real implementation (hybrid Qdrant
+upsert + fastembed BM25 + OpenAI dense embeddings, idempotent via
+`TextNode.id_ = product.product_id`), two-task Celery design
+(`run_ingestion_job` orchestrator on queue `reindex`,
+`process_batch` worker on queue `reindex_batches`), PostgreSQL
+job/batch tracking with full state machines, admin reindex
+endpoints (`POST /admin/reindex` + `GET /admin/reindex/{job_id}`).
+End-to-end smoke test: admin token → 202 → orchestrator fetches
+32 products → worker dispatches → all 32 embedded and upserted
+to Qdrant (`points_count=32, status=green`) with zero
+`skipped_products`.  `src/app/rag/retriever.py` deleted.
+`fastembed>=0.7,<1.0` pinned in `pyproject.toml`.  298 tests
+passing, ruff + pyright clean, overall coverage 85%.  See
+`temp/phase-6-rag-ingestion.md` for the full implementation log
+and `history/6_0_0_RAG_INGESTION.md` for the decision record.
 
 ### Objective
 

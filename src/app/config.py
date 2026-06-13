@@ -49,6 +49,15 @@ class Settings(BaseSettings):
 
     # ── Saleor ──────────────────────────────────────────────────────────────
     saleor_url: str = Field(default="http://localhost:8080")
+    saleor_jwt_issuer: str = Field(
+        default="",
+        description=(
+            "Expected JWT ``iss`` claim.  Saleor sets ``iss`` to the user-visible "
+            "GraphQL endpoint (e.g. ``http://localhost:8000/graphql/``) which may "
+            "differ from the Docker-internal ``SALEOR_URL`` used to fetch JWKS. "
+            "When empty, ``saleor_url`` is used as the issuer."
+        ),
+    )
     saleor_app_token: str = Field(default="")
     saleor_webhook_secret: str = Field(
         ..., description="HMAC-SHA256 webhook secret (min 32 chars)."
@@ -77,6 +86,19 @@ class Settings(BaseSettings):
     # ── Ingestion ───────────────────────────────────────────────────────────
     description_max_chars: int = Field(default=500)
     saleor_storefront_url: str = Field(default="")
+    reindex_batch_size: int = Field(
+        default=100,
+        ge=1,
+        description="Number of products per Qdrant upsert batch during reindex.",
+    )
+    description_summarize_concurrency: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Max concurrent OpenAI summarization calls in ProductIndexer. "
+            "Bounds the asyncio.Semaphore used to protect OpenAI RPM/TPM."
+        ),
+    )
 
     # ── Agent Behavior ──────────────────────────────────────────────────────
     max_agent_steps: int = Field(default=10)
