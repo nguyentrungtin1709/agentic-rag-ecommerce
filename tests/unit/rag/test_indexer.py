@@ -618,3 +618,96 @@ async def test_delete_product_closes_qdrant(indexer: ProductIndexer) -> None:
         await indexer.delete_product("prod-99")
 
     mock_qdrant.close.assert_awaited_once()
+
+
+async def test_run_pipeline_closes_openai_client_inside_running_loop(
+    indexer: ProductIndexer,
+) -> None:
+    """``_run_pipeline`` must close the OpenAI client before returning.
+
+    Background: ``openai.AsyncHttpxClientWrapper.__del__`` schedules
+    ``aclose()`` as a background task on whatever loop is running at
+    GC time.  When ``_run_pipeline`` is invoked from
+    ``asyncio.run()`` in a Celery task, the inner loop closes as soon
+    as ``_run_pipeline`` returns — so leaving the OpenAI client open
+    causes its ``__del__`` to schedule ``aclose()`` on the (closed)
+    inner loop, which surfaces as the noisy
+    ``Task exception was never retrieved`` log line in the worker
+    (see ``ERROR.md`` fix #2).  This test ensures the indexer
+    explicitly closes the OpenAI client inside the still-running
+    loop, which makes ``is_closed`` True so ``__del__`` returns
+    without scheduling the bad task.
+    """
+    with (
+        patch("app.rag.indexer.QdrantService") as mock_qdrant_cls,
+        patch("app.rag.indexer.QdrantVectorStore"),
+        patch("app.rag.indexer.OpenAIEmbedding") as mock_embed_cls,
+        patch("app.rag.indexer.IngestionPipeline") as mock_pipeline_cls,
+    ):
+        mock_qdrant = MagicMock()
+        mock_qdrant.client = MagicMock()
+        mock_qdrant.ensure_collection = AsyncMock()
+        mock_qdrant.close = AsyncMock()
+        mock_qdrant_cls.return_value = mock_qdrant
+
+        # Build an embed_model mock whose ``_aclient`` is an AsyncMock
+        # we can assert was awaited.  Mirrors the lazy-init pattern of
+        # the real ``OpenAIEmbedding._aclient`` attribute.
+        mock_embed_model = MagicMock()
+        mock_aclient = MagicMock()
+        mock_aclient.close = AsyncMock()
+        mock_embed_model._aclient = mock_aclient
+        mock_embed_cls.return_value = mock_embed_model
+
+        # Build a pipeline whose ``arun`` resolves successfully.
+        mock_pipeline = MagicMock()
+        mock_pipeline.arun = AsyncMock()
+        mock_pipeline_cls.return_value = mock_pipeline
+
+        nodes = [MagicMock()]
+        await indexer._run_pipeline(nodes)  # type: ignore[arg-type]
+
+    # The OpenAI client's close() was awaited exactly once, inside
+    # the still-running loop (before asyncio.run() would close it).
+    mock_aclient.close.assert_awaited_once()
+    # Qdrant was also closed — the existing invariant must hold too.
+    mock_qdrant.close.assert_awaited_once()
+
+
+async def test_run_pipeline_closes_openai_client_even_when_pipeline_raises(
+    indexer: ProductIndexer,
+) -> None:
+    """The OpenAI client is closed via finally even if ``pipeline.arun`` fails.
+
+    The bug being guarded against fires when the OpenAI client is
+    left open: an exception inside ``arun`` must not bypass the
+    cleanup, otherwise the same ``__del__``-schedules-closed-loop
+    pathology returns.
+    """
+    with (
+        patch("app.rag.indexer.QdrantService") as mock_qdrant_cls,
+        patch("app.rag.indexer.QdrantVectorStore"),
+        patch("app.rag.indexer.OpenAIEmbedding") as mock_embed_cls,
+        patch("app.rag.indexer.IngestionPipeline") as mock_pipeline_cls,
+    ):
+        mock_qdrant = MagicMock()
+        mock_qdrant.client = MagicMock()
+        mock_qdrant.ensure_collection = AsyncMock()
+        mock_qdrant.close = AsyncMock()
+        mock_qdrant_cls.return_value = mock_qdrant
+
+        mock_embed_model = MagicMock()
+        mock_aclient = MagicMock()
+        mock_aclient.close = AsyncMock()
+        mock_embed_model._aclient = mock_aclient
+        mock_embed_cls.return_value = mock_embed_model
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.arun = AsyncMock(side_effect=RuntimeError("simulated LLM error"))
+        mock_pipeline_cls.return_value = mock_pipeline
+
+        with pytest.raises(RuntimeError, match="simulated LLM error"):
+            await indexer._run_pipeline([MagicMock()])  # type: ignore[arg-type]
+
+    mock_aclient.close.assert_awaited_once()
+    mock_qdrant.close.assert_awaited_once()

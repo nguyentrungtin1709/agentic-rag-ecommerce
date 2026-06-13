@@ -15,7 +15,8 @@ import openai
 import pytest
 
 from app.models.ingestion import IngestionBatch, IngestionJob
-from app.tasks.process_batch import _is_transient, process_batch
+from app.tasks.process_batch import process_batch
+from app.utils.transient import is_transient
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -37,7 +38,7 @@ def _invoke_task(fake_self: MagicMock, batch_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# _is_transient classifier
+# is_transient classifier
 # ---------------------------------------------------------------------------
 
 
@@ -45,37 +46,37 @@ def test_is_transient_openai_rate_limit() -> None:
     """``openai.RateLimitError`` is transient."""
     # Use a constructor that doesn't require an HTTP response object.
     exc = openai.RateLimitError(message="rate limit", response=MagicMock(), body=None)
-    assert _is_transient(exc) is True
+    assert is_transient(exc) is True
 
 
 def test_is_transient_openai_api_timeout() -> None:
     """``openai.APITimeoutError`` is transient."""
     exc = openai.APITimeoutError(request=MagicMock())
-    assert _is_transient(exc) is True
+    assert is_transient(exc) is True
 
 
 def test_is_transient_openai_internal_server_error() -> None:
     """``openai.InternalServerError`` is transient."""
     exc = openai.InternalServerError(message="boom", response=MagicMock(), body=None)
-    assert _is_transient(exc) is True
+    assert is_transient(exc) is True
 
 
 def test_is_transient_httpx_connect_error() -> None:
     """``httpx.ConnectError`` is transient."""
     exc = httpx.ConnectError("refused")
-    assert _is_transient(exc) is True
+    assert is_transient(exc) is True
 
 
 def test_is_transient_httpx_read_timeout() -> None:
     """``httpx.ReadTimeout`` is transient."""
     exc = httpx.ReadTimeout("slow")
-    assert _is_transient(exc) is True
+    assert is_transient(exc) is True
 
 
 def test_is_transient_httpx_connect_timeout() -> None:
     """``httpx.ConnectTimeout`` is transient."""
     exc = httpx.ConnectTimeout("slow")
-    assert _is_transient(exc) is True
+    assert is_transient(exc) is True
 
 
 def test_is_transient_qdrant_unexpected_response() -> None:
@@ -89,22 +90,22 @@ def test_is_transient_qdrant_unexpected_response() -> None:
         content=b"",
         headers=httpx.Headers(),
     )
-    assert _is_transient(exc) is True
+    assert is_transient(exc) is True
 
 
 def test_is_transient_value_error_is_permanent() -> None:
     """``ValueError`` is not in the transient whitelist -> permanent."""
-    assert _is_transient(ValueError("bad data")) is False
+    assert is_transient(ValueError("bad data")) is False
 
 
 def test_is_transient_runtime_error_is_permanent() -> None:
     """``RuntimeError`` is not in the transient whitelist -> permanent."""
-    assert _is_transient(RuntimeError("oops")) is False
+    assert is_transient(RuntimeError("oops")) is False
 
 
 def test_is_transient_key_error_is_permanent() -> None:
     """``KeyError`` is not in the transient whitelist -> permanent."""
-    assert _is_transient(KeyError("missing")) is False
+    assert is_transient(KeyError("missing")) is False
 
 
 # ---------------------------------------------------------------------------

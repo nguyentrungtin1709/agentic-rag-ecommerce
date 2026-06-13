@@ -34,14 +34,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-import httpx
-import qdrant_client.http.exceptions as qdrant_exc
 import structlog
-from openai import (
-    APITimeoutError,
-    InternalServerError,
-    RateLimitError,
-)
 
 from app.config import get_settings
 from app.db.session import get_asyncpg_pool, open_pools
@@ -52,29 +45,9 @@ from app.repositories.ingestion_repo import (
 )
 from app.services.saleor_client import SaleorClient
 from app.tasks.celery_app import celery_app
+from app.utils.transient import is_transient
 
 logger = structlog.get_logger(__name__)
-
-
-def _is_transient(exc: BaseException) -> bool:
-    """Classify an exception as transient (auto-retry) or permanent.
-
-    Transient = retried by Celery (rate limits, timeouts, connection
-    errors, Qdrant HTTP errors).  Anything else is permanent and
-    fails the batch without retry.
-    """
-    return isinstance(
-        exc,
-        (
-            RateLimitError,
-            APITimeoutError,
-            InternalServerError,
-            httpx.ConnectError,
-            httpx.ReadTimeout,
-            httpx.ConnectTimeout,
-            qdrant_exc.UnexpectedResponse,
-        ),
-    )
 
 
 async def _retry_with_retry_count(batch_id: uuid.UUID, settings) -> None:
@@ -132,7 +105,7 @@ def process_batch(self, batch_id: str) -> dict:
     try:
         return asyncio.run(_process(self, batch_uuid, settings))
     except Exception as exc:
-        if _is_transient(exc):
+        if is_transient(exc):
             logger.warning(
                 "batch_transient_error_will_retry",
                 batch_id=batch_id,

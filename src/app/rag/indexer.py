@@ -371,7 +371,24 @@ class ProductIndexer:
                 transformations=[embed_model],
                 vector_store=vector_store,
             )
-            await pipeline.arun(nodes=nodes)
+            try:
+                await pipeline.arun(nodes=nodes)
+            finally:
+                # Close the OpenAI httpx wrapper INSIDE the running
+                # loop.  ``AsyncHttpxClientWrapper.__del__`` schedules
+                # ``aclose()`` as a background task on whatever loop
+                # is running at GC time.  When the loop that owns the
+                # client has already been closed (e.g. after
+                # ``asyncio.run()`` returns in a Celery task), that
+                # task runs on a foreign loop and fails with
+                # ``RuntimeError('Event loop is closed')`` — surfaces
+                # as the noisy ``Task exception was never retrieved``
+                # line in the worker log.  Closing eagerly here makes
+                # ``is_closed`` True so ``__del__`` returns without
+                # scheduling the bad task.
+                aclient = embed_model._aclient
+                if aclient is not None:
+                    await aclient.close()
         finally:
             await qdrant.close()
 

@@ -14,7 +14,7 @@
 > - `[DONE]` — implementation complete, tests passing
 > - `[PENDING]` — work not yet started
 >
-> Phases 1–6 are `[DONE]`.  Phases 7–14 are `[PENDING]`.
+> Phases 1–7 are `[DONE]`.  Phases 8–14 are `[PENDING]`.
 
 ---
 
@@ -399,7 +399,7 @@ truth for retrieval (per decision locked during the Phase 4 review).
 
 ---
 
-## Phase 7 — Webhook handling
+## Phase 7 — Webhook handling — DONE
 
 ### Objective
 

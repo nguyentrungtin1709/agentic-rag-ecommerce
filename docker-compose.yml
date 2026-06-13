@@ -13,6 +13,7 @@ services:
       - "8080:8080"
     networks:
       - agentic-rag
+      - saleor-backend-tier
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,6 +45,7 @@ services:
       - "host.docker.internal:host-gateway"
     networks:
       - agentic-rag
+      - saleor-backend-tier
     depends_on:
       postgres:
         condition: service_healthy
@@ -272,6 +274,13 @@ networks:
   agentic-rag:
     name: agentic-rag
     driver: bridge
+  # Attached to the Saleor stack so the API can deliver webhooks to the POD
+  # Stylist app via the service name (http://app:8080).  Marked external
+  # because it is owned by the saleor-platform compose project; do not
+  # create or delete it from here.
+  saleor-backend-tier:
+    name: saleor-platform_saleor-backend-tier
+    external: true
 
 volumes:
   postgres_data:

@@ -205,6 +205,89 @@ class SaleorClient:
             thumbnail_url=(node.get("thumbnail") or {}).get("url") or "",
         )
 
+    @staticmethod
+    def webhook_object_to_product_payload(
+        data: dict[str, Any],
+        storefront_url: str,
+    ) -> ProductPayload | None:
+        """Convert a Saleor webhook product dict to ``ProductPayload``.
+
+        The webhook subscription query in the Saleor dashboard
+        controls which fields appear in the payload.  With the
+        ``subscription { event { ... on ProductCreated { product { ... } } } }``
+        root, the body is the inner selection set — there is no
+        ``event`` field and no ``data`` wrapper; the ``product``
+        dict is the entire body.  The endpoint strips the wrapper
+        before dispatch and passes this helper the unwrapped
+        product dict.
+
+        If the subscription includes ``pricing`` (or
+        ``channelListings`` with pricing), we can build the payload
+        directly and skip a Saleor API call.  If pricing is missing,
+        this returns ``None`` so the caller can fall back to
+        :meth:`fetch_product_by_id` for the canonical data.
+
+        Pricing resolution order:
+
+        1. ``data.pricing.priceRange.{start,stop}.gross.amount`` —
+           the canonical Saleor path.
+        2. ``data.channelListings[0].pricing.priceRange.{...}`` —
+           per-channel pricing, used as fallback when the top-level
+           ``pricing`` is null (e.g. products not yet assigned to a
+           channel for the storefront currency).
+
+        Args:
+            data: The raw product dict from the webhook body
+                (validated by :class:`app.schemas.webhook.ProductObject`).
+            storefront_url: Base storefront URL for building
+                ``saleor_url``.
+
+        Returns:
+            ``ProductPayload`` if pricing (and other required
+            fields) are present in the payload, else ``None`` to
+            signal the caller to fall back to a Saleor fetch.
+        """
+        pricing = (data.get("pricing") or {}).get("priceRange") or {}
+        if not (pricing.get("start") or {}).get("gross"):
+            # Try the first channel listing that has pricing.
+            for listing in data.get("channelListings") or []:
+                listing_pricing = (listing or {}).get("pricing") or {}
+                if (listing_pricing.get("priceRange") or {}).get("start", {}).get("gross"):
+                    pricing = listing_pricing["priceRange"]
+                    break
+
+        if not (pricing.get("start") or {}).get("gross"):
+            # No usable pricing anywhere in the payload — caller
+            # should refetch from Saleor.
+            return None
+
+        # If we resolved pricing from a channel listing (rather than
+        # the top-level ``data.pricing``), inject it back so the
+        # standard node mapper can find it.  Preserve the outer
+        # ``pricing.priceRange`` nesting that ``node_to_product_payload``
+        # expects.
+        if (data.get("pricing") or {}).get("priceRange") is not pricing:
+            data = {**data, "pricing": {"priceRange": pricing}}
+        return SaleorClient.node_to_product_payload(data, storefront_url)
+
+    async def fetch_product_by_id(self, product_id: str) -> dict[str, Any] | None:
+        """Re-fetch a single product by its Saleor ID.
+
+        Convenience wrapper around :meth:`fetch_products_by_ids` for
+        callers (e.g. the webhook handler) that need exactly one
+        product.  Returns ``None`` if the product does not exist in
+        Saleor.
+
+        Args:
+            product_id: Saleor product ID (``Product.id``).
+
+        Returns:
+            The raw product ``node`` dict, or ``None`` if no
+            product with that ID exists in Saleor.
+        """
+        results = await self.fetch_products_by_ids([product_id])
+        return results[0] if results else None
+
     async def fetch_products_by_ids(self, product_ids: list[str]) -> list[dict[str, Any]]:
         """Re-fetch a list of products by their Saleor IDs.
 
