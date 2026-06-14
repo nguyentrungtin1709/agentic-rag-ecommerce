@@ -15,6 +15,7 @@ import structlog
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from langgraph.pregel import Pregel
+from langgraph.store.base import BaseStore
 from openai import AsyncOpenAI
 
 from app.auth.jwt_verifier import verify_token
@@ -214,8 +215,25 @@ def get_graph(request: Request) -> Pregel:
     return request.app.state.graph
 
 
+def get_store(request: Request) -> BaseStore:
+    """Return the ``AsyncPostgresStore`` singleton from app state (Phase 9).
+
+    The store holds long-term user state outside the per-thread
+    checkpoint — currently the ``("profiles", user_id)`` namespace
+    with key ``"profile"`` (see ``app.agent.nodes.profiler``).  Set
+    in ``app.main.lifespan`` and consumed by
+    ``GET /api/v1/users/{user_id}/profile`` to surface the latest
+    style profile to admin operators (FR-032).
+
+    See ``history/9_0_0_PROFILE_AND_ADMIN_API.md`` decision D9.1
+    and D9.2.
+    """
+    return request.app.state.store
+
+
 QdrantDep = Annotated[QdrantService, Depends(get_qdrant_service)]
 ValkeyDep = Annotated[ValkeyService, Depends(get_valkey_service)]
 S3Dep = Annotated[S3Service, Depends(get_s3_service)]
 OpenAIDep = Annotated[AsyncOpenAI, Depends(get_openai_client)]
 GraphDep = Annotated[Pregel, Depends(get_graph)]
+StoreDep = Annotated[BaseStore, Depends(get_store)]

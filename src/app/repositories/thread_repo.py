@@ -136,6 +136,68 @@ class ThreadRepository:
                 )
         return [Thread(**dict(row)) for row in rows]
 
+    async def list_all(
+        self,
+        limit: int = 20,
+        before: uuid.UUID | None = None,
+    ) -> list[Thread]:
+        """Return threads across all users, newest first (cursor-based).
+
+        Admin-only counterpart of :meth:`list_by_user` for the
+        ``GET /api/v1/admin/threads`` endpoint (FR-104, Phase 9).
+        No ``user_id`` predicate — admin operators see every thread.
+
+        Note:
+            The cursor is **not** ownership-checked (admin context).
+            An operator may pass a thread ID belonging to any user; the
+            cursor resolves against the global rowset and either returns
+            the next page or an empty list if the ID is unknown.
+
+        Args:
+            limit: Maximum rows to return (default 20).
+            before: Cursor — return threads older than the thread with
+                this ID.  Pass ``None`` for the first page.
+
+        Returns:
+            List of ``Thread`` domain models in newest-first order.
+        """
+        async with self._pool.acquire() as conn:
+            if before is None:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, user_id, title, status, title_generated,
+                           title_generation_attempts, created_at, updated_at,
+                           last_activity_at
+                    FROM threads
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
+            else:
+                cursor_row = await conn.fetchrow(
+                    "SELECT updated_at FROM threads WHERE id = $1",
+                    before,
+                )
+                if cursor_row is None:
+                    return []
+                rows = await conn.fetch(
+                    """
+                    SELECT id, user_id, title, status, title_generated,
+                           title_generation_attempts, created_at, updated_at,
+                           last_activity_at
+                    FROM threads
+                    WHERE (updated_at < $1
+                           OR (updated_at = $1 AND id::text < $2::text))
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT $3
+                    """,
+                    cursor_row["updated_at"],
+                    str(before),
+                    limit,
+                )
+        return [Thread(**dict(row)) for row in rows]
+
     async def set_status(self, thread_id: uuid.UUID, status: str) -> None:
         """Update the lifecycle status of a thread.
 

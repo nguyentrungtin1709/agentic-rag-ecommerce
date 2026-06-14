@@ -79,6 +79,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # ── Agent graph ─────────────────────────────────────────────────────────
     app.state.graph = build_graph(checkpointer=checkpointer, store=store)
+    # Phase 9: expose the store on app state so handlers can read long-term
+    # user state (profiler namespace ``("profiles", user_id)``) without
+    # rebuilding a second ``AsyncPostgresStore`` instance. See
+    # ``history/9_0_0_PROFILE_AND_ADMIN_API.md`` decision D9.1.
+    app.state.store = store
 
     # ── Qdrant ──────────────────────────────────────────────────────────────
     qdrant = QdrantService(settings)

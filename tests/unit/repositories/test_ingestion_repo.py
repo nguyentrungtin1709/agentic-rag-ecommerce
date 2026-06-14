@@ -180,6 +180,90 @@ async def test_job_increment_failed_is_atomic_sql(
 
 
 # ---------------------------------------------------------------------------
+# IngestionJobRepository.list_all (Phase 9, D9.5')
+# ---------------------------------------------------------------------------
+
+
+async def test_job_list_all_first_page_uses_coalesce_infinity(
+    job_repo: IngestionJobRepository, mock_asyncpg_pool: tuple[MagicMock, AsyncMock]
+) -> None:
+    """``list_all`` sorts by ``COALESCE(started_at, 'infinity')`` DESC
+    so pending jobs (no ``started_at`` yet) float to the top of the
+    first page — the documented Phase 9 D9.5' ordering decision."""
+    _pool, conn = mock_asyncpg_pool
+    conn.fetch.return_value = []
+
+    await job_repo.list_all(limit=20)
+
+    sql, limit_arg = conn.fetch.call_args.args
+    assert "ORDER BY COALESCE(started_at, 'infinity'::timestamptz) DESC" in sql
+    assert "id::text DESC" in sql
+    assert limit_arg == 20
+
+
+async def test_job_list_all_first_page_hydrates_jobs(
+    job_repo: IngestionJobRepository, mock_asyncpg_pool: tuple[MagicMock, AsyncMock]
+) -> None:
+    """Rows from the first page are parsed into ``IngestionJob`` models."""
+    _pool, conn = mock_asyncpg_pool
+    j1 = uuid.uuid4()
+    j2 = uuid.uuid4()
+    conn.fetch.return_value = [
+        _make_job_row(j1, status="processing", total_products=100, total_batches=1),
+        _make_job_row(j2, status="completed", total_products=200, total_batches=2),
+    ]
+
+    result = await job_repo.list_all(limit=20)
+
+    assert len(result) == 2
+    assert [j.id for j in result] == [j1, j2]
+    assert result[0].status == "processing"
+    assert result[1].total_batches == 2
+
+
+async def test_job_list_all_with_cursor_uses_coalesce_lt(
+    job_repo: IngestionJobRepository, mock_asyncpg_pool: tuple[MagicMock, AsyncMock]
+) -> None:
+    """The next-page query uses the same ``COALESCE(...) < $1``
+    predicate as the sort key, so pending jobs (which have
+    ``COALESCE(...) = 'infinity'``) are correctly skipped from the
+    next page when the cursor also points at a pending job."""
+    from datetime import UTC, datetime
+
+    _pool, conn = mock_asyncpg_pool
+    cursor_id = uuid.uuid4()
+    cursor_sort = datetime(2026, 6, 14, 10, 0, tzinfo=UTC)
+    conn.fetchrow.return_value = {"sort_key": cursor_sort}
+    conn.fetch.return_value = []
+
+    await job_repo.list_all(limit=20, before=cursor_id)
+
+    cursor_sql, cursor_arg = conn.fetchrow.call_args.args
+    assert "COALESCE(started_at, 'infinity'::timestamptz) AS sort_key" in cursor_sql
+    assert cursor_arg == cursor_id
+    fetch_sql, fetch_sort, fetch_cursor_str, fetch_limit = conn.fetch.call_args.args
+    assert "COALESCE(started_at, 'infinity'::timestamptz) < $1" in fetch_sql
+    assert "id::text < $2::text" in fetch_sql
+    assert fetch_sort == cursor_sort
+    assert fetch_cursor_str == str(cursor_id)
+    assert fetch_limit == 20
+
+
+async def test_job_list_all_with_unknown_cursor_returns_empty(
+    job_repo: IngestionJobRepository, mock_asyncpg_pool: tuple[MagicMock, AsyncMock]
+) -> None:
+    """An unknown cursor UUID short-circuits to ``[]`` without issuing
+    the second ``fetch`` — matches the per-user thread list behaviour."""
+    _pool, conn = mock_asyncpg_pool
+    conn.fetchrow.return_value = None
+
+    result = await job_repo.list_all(limit=20, before=uuid.uuid4())
+
+    assert result == []
+    conn.fetch.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # IngestionBatchRepository
 # ---------------------------------------------------------------------------
 

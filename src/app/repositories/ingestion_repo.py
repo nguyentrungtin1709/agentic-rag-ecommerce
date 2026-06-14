@@ -96,6 +96,89 @@ class IngestionJobRepository:
             )
         return IngestionJob(**dict(row)) if row else None
 
+    async def list_all(
+        self,
+        limit: int = 20,
+        before: uuid.UUID | None = None,
+    ) -> list[IngestionJob]:
+        """Return all reindex jobs across the system, newest first.
+
+        Admin-only counterpart for the ``GET /api/v1/admin/reindex``
+        endpoint (Phase 9, decision D9.5').  No user-scoped filter —
+        operators see every job across the entire deployment.
+
+        Ordering note (D9.5'):
+            ``ingestion_jobs`` has no ``created_at`` column — only
+            ``started_at`` (nullable) and ``completed_at``.  We use
+            ``COALESCE(started_at, 'infinity'::timestamptz)`` as the
+            sort key so pending jobs (no ``started_at`` yet) sort to
+            the top of the list — admin typically wants the most
+            recently dispatched job (which is in ``pending`` for a
+            brief moment before the worker picks it up) to appear at
+            the top.  Using ``'infinity'`` means "newer than any real
+            timestamp" so pending jobs get the top slot, then real
+            timestamps in descending order.
+
+        Note:
+            If a cursor points at a pending job, the next page's
+            ``WHERE COALESCE(...) < 'infinity'`` predicate skips
+            every other pending job.  This is a documented edge case
+            in D9.5' — non-disastrous because operators typically
+            only need the most recent N jobs, not exact pagination
+            through pending state.
+
+        Args:
+            limit: Maximum rows to return (default 20).
+            before: Cursor — return jobs older than the job with this
+                ID.  Pass ``None`` for the first page.
+
+        Returns:
+            List of ``IngestionJob`` domain models in newest-first order.
+        """
+        async with self._pool.acquire() as conn:
+            if before is None:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, celery_task_id, status, total_products,
+                           total_batches, processed_count, failed_count,
+                           started_at, completed_at, error_message
+                    FROM ingestion_jobs
+                    ORDER BY COALESCE(started_at, 'infinity'::timestamptz) DESC,
+                             id::text DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
+            else:
+                cursor_row = await conn.fetchrow(
+                    """
+                    SELECT COALESCE(started_at, 'infinity'::timestamptz) AS sort_key
+                    FROM ingestion_jobs
+                    WHERE id = $1
+                    """,
+                    before,
+                )
+                if cursor_row is None:
+                    return []
+                rows = await conn.fetch(
+                    """
+                    SELECT id, celery_task_id, status, total_products,
+                           total_batches, processed_count, failed_count,
+                           started_at, completed_at, error_message
+                    FROM ingestion_jobs
+                    WHERE COALESCE(started_at, 'infinity'::timestamptz) < $1
+                       OR (COALESCE(started_at, 'infinity'::timestamptz) = $1
+                           AND id::text < $2::text)
+                    ORDER BY COALESCE(started_at, 'infinity'::timestamptz) DESC,
+                             id::text DESC
+                    LIMIT $3
+                    """,
+                    cursor_row["sort_key"],
+                    str(before),
+                    limit,
+                )
+        return [IngestionJob(**dict(row)) for row in rows]
+
     async def set_celery_task_id(
         self,
         job_id: uuid.UUID,
