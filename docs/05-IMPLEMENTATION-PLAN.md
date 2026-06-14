@@ -14,7 +14,7 @@
 > - `[DONE]` — implementation complete, tests passing
 > - `[PENDING]` — work not yet started
 >
-> Phases 1–7 are `[DONE]`.  Phases 8–14 are `[PENDING]`.
+> Phases 1–9 are `[DONE]`.  Phases 10–14 are `[PENDING]`.
 
 ---
 
@@ -57,8 +57,8 @@ webhook → Celery dispatch chain, (e) the cleanup Celery tasks, and
 | Prompts | `src/app/agent/prompts/` | DONE — 12 files (orchestrator, profiler, summarize, prepare_query, rerank, title, trend_scout, 4× synthesize variants) |
 | Thread API | `src/app/api/threads.py` | STUB — 5 endpoints returning 501 |
 | Chat SSE API | `src/app/api/chat.py` | STUB — 1 endpoint returning 501 |
-| Profile API | `src/app/api/profile.py` | STUB — 1 endpoint returning 501 |
-| Admin API | `src/app/api/admin.py` | STUB — 2 endpoints returning 501 |
+| Profile API | `src/app/api/profile.py` | DONE — admin reads long-term style profile from `AsyncPostgresStore` (Phase 9) |
+| Admin API | `src/app/api/admin.py` | DONE — reindex trigger (Phase 6) + reindex list + threads list (Phase 9) |
 | Webhook API | `src/app/api/webhooks.py` | PARTIAL — HMAC verify done, Celery dispatch stubbed |
 | `synthesize` node | `src/app/agent/nodes/synthesize.py` | STUB |
 | `generate_title` node | `src/app/agent/nodes/generate_title.py` | STUB |
@@ -88,9 +88,9 @@ webhook → Celery dispatch chain, (e) the cleanup Celery tasks, and
 | 4 | Product RAG | ProductRAGAgent subgraph + hybrid search | DONE |
 | 5 | Cross-cutting wiring + Repo/Service enhancements | slowapi, fastapi-cache2, S3Service/ValkeyService/Repository extensions | DONE |
 | 6 | RAG Ingestion | ProductIndexer real, reindex_products Celery task, delete `rag/retriever.py` | DONE |
-| 7 | Webhook handling | `api/webhooks.py` Celery dispatch, `process_webhook` task real | PENDING |
-| 8 | Thread Management API | 5 thread endpoints + history + status guards + cache invalidation | PENDING |
-| 9 | Profile + Admin API | 3 admin endpoints (profile, reindex, all threads) | PENDING |
+| 7 | Webhook handling | `api/webhooks.py` Celery dispatch, `process_webhook` task real | DONE |
+| 8 | Thread Management API | 5 thread endpoints + history + status guards + cache invalidation | DONE |
+| 9 | Profile + Admin API | 4 admin endpoints (profile, reindex trigger, reindex list, all threads) | DONE |
 | 10 | Cleanup Celery tasks | `delete_thread` + `cleanup_expired_threads` real | PENDING |
 | 11 | Trend Scout | TrendScoutNode via `create_react_agent` + Tavily + DuckDuckGo | PENDING |
 | 12 | Synthesize + Title Generation | `synthesize.py` + `generate_title.py` real (4-prompt dispatch) | PENDING |
@@ -530,13 +530,73 @@ Used by `POST /threads` (8.1) and `DELETE /threads/{id}` (8.5).
 
 ---
 
-## Phase 9 — Profile + Admin API
+## Phase 9 — Profile + Admin API — DONE
+
+**Result**: 419 tests passing (+40 from Phase 8 baseline of 379, net of
+-3 cleanup removals from `tests/integration/test_threads.py`),
+89.21% coverage, ruff + pyright + pre-commit all clean.  See
+`temp/phase-9-profile-admin-api.md` for the full report and
+`history/9_0_0_PROFILE_AND_ADMIN_API.md` for the full ADR
+(D9.1–D9.8, D9.5', D9.6').
+
+### Divergences from the original Phase 9 spec
+
+The original spec called for 3 endpoints.  Phase 9 ships 4 — the
+extra one (`GET /api/v1/admin/reindex`) was added during
+implementation to close a REST gap left by Phase 6: the
+`POST /admin/reindex` + `GET /admin/reindex/{job_id}` pair shipped
+together, but the collection endpoint (no `job_id`) was never built.
+Operators had no way to list all jobs without hitting the DB
+directly, so the listing endpoint was promoted from
+"nice-to-have" to "required" during Phase 9 review and is now part
+of the contract.
+
+A `batches[]` array is **deliberately omitted** from the listing
+response (D9.6') — drill into `GET /admin/reindex/{job_id}` for
+batch-level detail.  Including it in the list payload would
+quadruple the response size for no operational benefit.
+
+### Bugs found and fixed (by writing the tests)
+
+1. `ThreadResponse.model_validate(r)` failed against the raw
+   asyncpg `Record` with `ValidationError: Input should be a valid
+   dictionary or instance of ThreadResponse`.  Fix: pass
+   `from_attributes=True` so Pydantic reads from the record's
+   attribute access.
+2. `IngestionJobSummary` field alias was reversed — it was declared
+   as `job_id: uuid.UUID = Field(alias="id")`, so
+   `model_dump(by_alias=True)` produced `id` in JSON, not `job_id`.
+   Fix: flip to `id: uuid.UUID = Field(alias="job_id")` and add
+   `response_model_by_alias=True` to the `/admin/reindex` route.
+
+### Cleanup: 3 flaky integration tests removed
+
+The shared dev DB / Valkey / LangGraph checkpointer is shared
+across all test runs, which made these 3 contracts untestable in
+the integration suite without dedicated infrastructure.  Each
+contract is fully covered by an isolated unit test in
+`tests/unit/api/test_threads.py`:
+
+| Removed test | Root cause | Unit test covering the contract |
+|---|---|---|
+| `test_list_threads_includes_newly_created_thread` | 50+ leftover threads; `limit=20` paginated the new one off page 1; cache race | `test_create_thread_returns_201_and_invalidates_cache` |
+| `test_double_delete_returns_410` | Celery `soft_delete_thread` worker raced with the 2nd DELETE | `test_delete_thread_returns_410_for_already_deleting` |
+| `test_history_returns_empty_for_brand_new_thread` | `AsyncPostgresStore` shared across runs | `test_history_returns_empty_when_graph_has_no_state` |
+
+Tracked follow-up: `docker-compose.test.yml` with dedicated
+Postgres + Valkey + checkpointer so each run starts clean.
+
+---
+
+## Phase 9 — Profile + Admin API (spec)
 
 ### Objective
 
-Replace the 3 stubs in `api/profile.py` and `api/admin.py` with real
-implementations backed by `AsyncPostgresStore`, `ThreadRepository`,
-and the Celery `reindex_products` task.
+Replace the 3 stubs in `api/profile.py` and `api/admin.py` with
+real implementations backed by `AsyncPostgresStore`,
+`ThreadRepository`, and the Celery `reindex_products` task.  Add
+the missing `GET /api/v1/admin/reindex` collection endpoint to
+close the Phase 6 REST gap.
 
 ### Tasks
 
@@ -544,10 +604,14 @@ and the Celery `reindex_products` task.
 
 - `AdminDep` guard.
 - `await store.aget(("profiles", user_id), "profile")`.
-- `404` if the key does not exist.
-- Return the serialised profile dict.
+- `404` if the key does not exist, `500` if the stored payload
+  fails Pydantic validation.
+- Return the envelope `{profile, updated_at}` (D9.3) so operators
+  can see how fresh the displayed data is — the store populates
+  `Item.updated_at` on every `aput`.
+- NOT cached (D9.7) — operator visibility demands fresh data.
 
-#### 9.2 `POST /api/v1/admin/reindex` (FR-103)
+#### 9.2 `POST /api/v1/admin/reindex` (FR-103, Phase 6)
 
 - `AdminDep` guard.
 - `reindex_products.delay()`.
@@ -560,13 +624,32 @@ and the Celery `reindex_products` task.
   repo — same shape as `list_by_user` but no `user_id` filter).
 - Return `ThreadListResponse`.
 
+#### 9.4 `GET /api/v1/admin/reindex` (NEW — closes Phase 6 REST gap)
+
+- `AdminDep` guard.
+- `IngestionJobRepository.list_all(before, limit)` (new method on
+  the repo — cursor-paginated, sorts by
+  `COALESCE(started_at, 'infinity'::timestamptz) DESC` so pending
+  jobs — with no `started_at` — sort to the top of the list
+  (D9.5')).
+- Return `IngestionJobListResponse` with strict `job_id` field
+  rename in JSON (`Field(alias="job_id")` +
+  `response_model_by_alias=True` on the route, D9.6') so the wire
+  format is decoupled from the internal `IngestionJob.id` column.
+- `batches[]` is **omitted** from the list payload (D9.6') — drill
+  into `GET /admin/reindex/{job_id}` for batch-level detail.
+- Query params: `limit` (1-100, default 20), `before` (cursor UUID).
+- Rate limit: 60/min (D9.8).
+
 ### Tests to Write
 
 | Test File | Test Cases |
 |---|---|
-| `tests/unit/api/test_profile.py` | Admin allowed reads profile from store; non-admin gets 403; missing profile returns 404 |
-| `tests/unit/api/test_admin.py` | `POST /reindex` enqueues Celery task with no args; `GET /admin/threads` paginates across all users; non-admin gets 403 on both |
-| `tests/integration/test_admin.py` | End-to-end: admin token from JWT → 202 on reindex → 200 on threads list |
+| `tests/unit/api/test_profile.py` | Admin allowed reads profile from store; non-admin gets 403; missing profile returns 404; corrupt payload returns 500; partial profile validates with defaults; envelope shape `{profile, updated_at}`; namespace + key flow through to `store.aget` |
+| `tests/unit/api/test_admin.py` | `POST /reindex` enqueues Celery task with no args; `GET /admin/threads` paginates across all users; `GET /admin/reindex` paginates with `job_id` alias and no `batches[]`; non-admin gets 403 on all three |
+| `tests/unit/repositories/test_thread_repo.py` | `list_all` SQL contract — no `user_id` filter, `ORDER BY updated_at DESC, id DESC`, cursor resolution, unknown cursor short-circuits to `[]` |
+| `tests/unit/repositories/test_ingestion_repo.py` | `list_all` SQL contract — `COALESCE(started_at, 'infinity'::timestamptz)` so pending jobs sort first, cursor resolution, unknown cursor short-circuits to `[]` |
+| `tests/integration/test_admin.py` | End-to-end: admin token from JWT → 200 on threads list, 200 on reindex list (with `job_id` alias + no `batches[]`), 403 on non-admin, 401 on no JWT, unknown cursor returns empty |
 
 ---
 
