@@ -139,3 +139,93 @@ async def test_count_by_user_date_returns_zero_for_no_images(
     result = await repo.count_by_user_date("user-1", date(2026, 6, 11))
 
     assert result == 0
+
+
+# ---------------------------------------------------------------------------
+# list_by_message_ids (D8.9 — batch lookup, N+1 avoidance)
+# ---------------------------------------------------------------------------
+
+
+async def test_list_by_message_ids_returns_empty_dict_for_empty_input(
+    repo: ImageRepository, mock_asyncpg_pool: tuple[MagicMock, AsyncMock]
+) -> None:
+    """Empty input must not issue SQL and must return ``{}``."""
+    _pool, conn = mock_asyncpg_pool
+
+    result = await repo.list_by_message_ids([])
+
+    assert result == {}
+    conn.fetch.assert_not_awaited()
+
+
+async def test_list_by_message_ids_uses_any_predicate(
+    repo: ImageRepository, mock_asyncpg_pool: tuple[MagicMock, AsyncMock]
+) -> None:
+    """The batch query must use ``request_message_id = ANY($1::text[])``
+    so it executes in a single round-trip rather than N+1.
+    """
+    _pool, conn = mock_asyncpg_pool
+    conn.fetch.return_value = []
+
+    await repo.list_by_message_ids(["m1", "m2", "m3"])
+
+    sql, ids = conn.fetch.call_args.args
+    assert "request_message_id = ANY($1::text[])" in sql
+    assert "ORDER BY request_message_id, created_at ASC" in sql
+    assert ids == ["m1", "m2", "m3"]
+
+
+async def test_list_by_message_ids_groups_rows_by_message_id(
+    repo: ImageRepository, mock_asyncpg_pool: tuple[MagicMock, AsyncMock]
+) -> None:
+    """Rows must be grouped by ``request_message_id`` in chronological order
+    and every input id must have an entry (empty list when no match)."""
+    _pool, conn = mock_asyncpg_pool
+    img_a1 = {
+        "id": uuid.uuid4(),
+        "thread_id": uuid.uuid4(),
+        "user_id": "u1",
+        "prompt": "p1",
+        "s3_key": "k1",
+        "s3_url": "https://x/1",
+        "model": "dall-e-3",
+        "request_message_id": "a1",
+        "created_at": datetime(2026, 1, 1, tzinfo=UTC),
+    }
+    img_a2_a = {
+        "id": uuid.uuid4(),
+        "thread_id": uuid.uuid4(),
+        "user_id": "u1",
+        "prompt": "p2a",
+        "s3_key": "k2a",
+        "s3_url": "https://x/2a",
+        "model": "dall-e-3",
+        "request_message_id": "a2",
+        "created_at": datetime(2026, 1, 2, tzinfo=UTC),
+    }
+    img_a2_b = {
+        "id": uuid.uuid4(),
+        "thread_id": uuid.uuid4(),
+        "user_id": "u1",
+        "prompt": "p2b",
+        "s3_key": "k2b",
+        "s3_url": "https://x/2b",
+        "model": "dall-e-3",
+        "request_message_id": "a2",
+        "created_at": datetime(2026, 1, 3, tzinfo=UTC),
+    }
+    conn.fetch.return_value = [img_a1, img_a2_a, img_a2_b]
+
+    result = await repo.list_by_message_ids(["h1", "a1", "a2"])
+
+    assert set(result.keys()) == {"h1", "a1", "a2"}
+    # No match for h1 — caller can safely do ``result.get("h1")``.
+    assert result["h1"] == []
+    assert len(result["a1"]) == 1
+    assert result["a1"][0].s3_url == "https://x/1"
+    # Two images for a2, oldest first.
+    assert len(result["a2"]) == 2
+    assert [img.s3_url for img in result["a2"]] == [
+        "https://x/2a",
+        "https://x/2b",
+    ]

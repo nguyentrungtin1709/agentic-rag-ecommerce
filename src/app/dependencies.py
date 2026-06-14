@@ -14,6 +14,7 @@ import jwt
 import structlog
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from langgraph.pregel import Pregel
 from openai import AsyncOpenAI
 
 from app.auth.jwt_verifier import verify_token
@@ -49,6 +50,7 @@ SettingsDep = Annotated[Settings, Depends(get_app_settings)]
 
 
 async def get_current_user(
+    request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer_scheme)],
     settings: SettingsDep,
 ) -> dict:
@@ -60,7 +62,14 @@ async def get_current_user(
     a Docker-internal alias (e.g. ``host.docker.internal``) while still
     validating the user-visible ``iss`` URL set by Saleor.
 
+    The verified claims are also stashed on ``request.state.current_user``
+    so downstream cache key builders (e.g. ``thread_list_key_builder``)
+    can read the authenticated user without re-parsing the token
+    (D8.7 / Q1).
+
     Args:
+        request: Inbound FastAPI request — used to expose the claims
+            on ``request.state`` for downstream consumers.
         credentials: Extracted by ``HTTPBearer`` from the Authorization header.
         settings: Application settings for ``saleor_url`` and JWT issuer.
 
@@ -71,7 +80,7 @@ async def get_current_user(
         HTTPException: 401 if the token is invalid or expired.
     """
     try:
-        return await verify_token(
+        claims = await verify_token(
             credentials.credentials,
             settings.saleor_url,
             issuer=settings.saleor_jwt_issuer or None,
@@ -82,6 +91,8 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token.",
         ) from exc
+    request.state.current_user = claims
+    return claims
 
 
 CurrentUserDep = Annotated[dict, Depends(get_current_user)]
@@ -193,7 +204,18 @@ def get_openai_client(request: Request) -> AsyncOpenAI:
     return request.app.state.openai
 
 
+def get_graph(request: Request) -> Pregel:
+    """Return the compiled LangGraph state graph from app state (Phase 8).
+
+    Set in ``app.main.lifespan`` after the LangGraph checkpointer
+    and store are ready.  Consumed by ``GET /api/v1/threads/{id}/history``
+    to read the latest ``StateSnapshot`` for a thread.
+    """
+    return request.app.state.graph
+
+
 QdrantDep = Annotated[QdrantService, Depends(get_qdrant_service)]
 ValkeyDep = Annotated[ValkeyService, Depends(get_valkey_service)]
 S3Dep = Annotated[S3Service, Depends(get_s3_service)]
 OpenAIDep = Annotated[AsyncOpenAI, Depends(get_openai_client)]
+GraphDep = Annotated[Pregel, Depends(get_graph)]

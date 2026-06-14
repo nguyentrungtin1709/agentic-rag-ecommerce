@@ -444,7 +444,12 @@ FR-080, NFR-013 idempotency).
 
 ---
 
-## Phase 8 — Thread Management API
+## Phase 8 — Thread Management API — DONE
+
+**Result**: 379 tests passing, 88% coverage, full live-stack E2E.
+See `temp/phase-8-thread-api.md` for the full report.
+
+## Phase 8 — Thread Management API (spec)
 
 ### Objective
 
@@ -507,7 +512,11 @@ any mutation.
 ```python
 async def invalidate_thread_list_cache(valkey: ValkeyService, user_id: str) -> int:
     """Delete all cached pages for this user's thread list (FR-098)."""
-    return await valkey.delete_pattern(f"threads:{user_id}:*")
+    # Pattern MUST include the namespace prefix used by
+    # thread_list_key_builder — full key is
+    # `{_THREAD_LIST_CACHE_NAMESPACE}:threads:{user_id}:{before}:{limit}`.
+    pattern = f"{_THREAD_LIST_CACHE_NAMESPACE}:threads:{user_id}:*"
+    return await valkey.delete_pattern(pattern)
 ```
 
 Used by `POST /threads` (8.1) and `DELETE /threads/{id}` (8.5).

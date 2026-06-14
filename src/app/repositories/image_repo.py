@@ -184,6 +184,51 @@ class ImageRepository:
             )
         return [GeneratedImage(**dict(row)) for row in rows]
 
+    async def list_by_message_ids(
+        self,
+        message_ids: list[str],
+    ) -> dict[str, list[GeneratedImage]]:
+        """Return images for many ``HumanMessage.id`` values in one query.
+
+        Batch counterpart of :meth:`list_by_message_id` used by the
+        ``GET /threads/{id}/history`` endpoint (Phase 8, D8.9) to
+        avoid an N+1 loop when a page contains many human messages.
+        Reused by the Phase 14 chat SSE handler when emitting
+        ``image_ready`` events.
+
+        Args:
+            message_ids: ``HumanMessage.id`` values to look up. Order
+                does not matter; duplicates are de-duplicated by the
+                ``ANY`` predicate.
+
+        Returns:
+            Mapping from ``HumanMessage.id`` to a chronologically
+            ordered (``created_at`` ASC) list of
+            ``GeneratedImage``.  Keys are populated for every input
+            id — values are an empty list when no images matched,
+            so the caller can do ``images_by_msg.get(human_id)``
+            without a ``KeyError`` guard.  An empty input returns
+            an empty dict (and issues no SQL).
+        """
+        if not message_ids:
+            return {}
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, thread_id, user_id, prompt, s3_key, s3_url, model,
+                       request_message_id, created_at
+                FROM generated_images
+                WHERE request_message_id = ANY($1::text[])
+                ORDER BY request_message_id, created_at ASC
+                """,
+                message_ids,
+            )
+        grouped: dict[str, list[GeneratedImage]] = {mid: [] for mid in message_ids}
+        for row in rows:
+            mid = row["request_message_id"]
+            grouped.setdefault(mid, []).append(GeneratedImage(**dict(row)))
+        return grouped
+
     async def count_by_user_date(
         self,
         user_id: str,

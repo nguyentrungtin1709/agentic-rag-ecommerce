@@ -323,3 +323,136 @@ To enable `host.docker.internal` on Linux, add to the Saleor `api` service in it
 extra_hosts:
   - "host.docker.internal:host-gateway"
 ```
+
+---
+
+## Step 6 — Test Users (Integration Tests)
+
+The integration test suite needs **two authenticated users** so the
+`/api/v1/threads` endpoint can be exercised end-to-end with real
+Saleor JWTs:
+
+1. A regular **customer** account (`is_staff: false`) for the
+   thread-owner path.
+2. A **staff** account (`is_staff: true`) for the admin-only paths
+   (`GET /admin/threads` once Phase 8 wires admin filters).
+
+The credentials are loaded from environment variables so they are
+never hard-coded in the test source.  Put the real values in
+`.env.local` (gitignored) and reference them in `tests/integration/conftest.py`.
+
+### 6.1 — Prerequisites
+
+A Saleor instance is running and an admin token is available.
+Sign in once with the admin credentials you configured when
+bootstrapping Saleor (the example below uses
+`admin@gmail.com` / `Admin##123`):
+
+```bash
+ADMIN_JWT=$(curl -sS -X POST http://localhost:8000/graphql/ \
+  -H "Content-Type: application/json" \
+  -d '{"query": "mutation { tokenCreate(email: \"admin@gmail.com\", password: \"Admin##123\") { token } }"}' \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['tokenCreate']['token'])")
+```
+
+Also list the available channels — `accountRegister` requires a
+`channel` slug from this query:
+
+```bash
+curl -sS -X POST http://localhost:8000/graphql/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_JWT" \
+  -d '{"query": "{ channels { slug } }"}'
+# => { "data": { "channels": [ { "slug": "default-channel" }, ... ] } }
+```
+
+Mailpit runs alongside Saleor and captures every email Saleor
+sends — the set-password and confirmation links land there at
+`http://localhost:8025`.
+
+### 6.2 — Create the Customer Account
+
+Saleor's `accountRegister` mutation creates a non-staff user and
+fires an account-confirmation email.  The mutation **does not
+return a usable token until the email is confirmed**.
+
+```bash
+curl -sS -X POST http://localhost:8000/graphql/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_JWT" \
+  -d '{"query": "mutation Reg($input: AccountRegisterInput!) { accountRegister(input: $input) { user { id email isStaff } errors { field message code } } }", "variables": {"input": {"email": "testuser.podstylist@gmail.com", "password": "TestUser##123", "redirectUrl": "http://localhost:3000", "channel": "default-channel"}}}'
+```
+
+Open Mailpit at <http://localhost:8025> and copy the
+`token=...` query parameter from the
+`Account confirmation e-mail`.  Confirm the account:
+
+```bash
+curl -sS -X POST http://localhost:8000/graphql/ \
+  -H "Content-Type: application/json" \
+  -d '{"query": "mutation { confirmAccount(email: \"testuser.podstylist@gmail.com\", token: \"<token-from-mailpit>\") { user { id email isConfirmed } errors { field message code } } }"}'
+```
+
+Verify the customer can mint a JWT:
+
+```bash
+curl -sS -X POST http://localhost:8000/graphql/ \
+  -H "Content-Type: application/json" \
+  -d '{"query": "mutation { tokenCreate(email: \"testuser.podstylist@gmail.com\", password: \"TestUser##123\") { token user { isStaff } } }"}'
+```
+
+### 6.3 — Create the Staff Account
+
+`staffCreate` is admin-only and **does not accept a password** —
+Saleor emails the new staff member a set-password link.  The
+mutation requires a permission group ID.  Use the `Full Access`
+group (`R3JvdXA6MQ==`) for a superuser, or any narrower group
+to scope permissions:
+
+```bash
+curl -sS -X POST http://localhost:8000/graphql/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_JWT" \
+  -d '{"query": "mutation { staffCreate(input: {email: \"teststaff.podstylist@gmail.com\", firstName: \"Test\", lastName: \"Staff\", isActive: true, redirectUrl: \"http://localhost:3000\", addGroups: [\"R3JvdXA6MQ==\"]}) { user { id email isStaff } errors { field message code } } }"}'
+```
+
+Open Mailpit and copy the `token=...` from the
+`You're invited to join Saleor` email.  Set the password:
+
+```bash
+curl -sS -X POST http://localhost:8000/graphql/ \
+  -H "Content-Type: application/json" \
+  -d '{"query": "mutation { setPassword(email: \"teststaff.podstylist@gmail.com\", password: \"TestStaff##123\", token: \"<token-from-mailpit>\") { user { isStaff } errors { field message code } } }"}'
+```
+
+Verify the staff user mints a JWT with `is_staff: true`:
+
+```bash
+curl -sS -X POST http://localhost:8000/graphql/ \
+  -H "Content-Type: application/json" \
+  -d '{"query": "mutation { tokenCreate(email: \"teststaff.podstylist@gmail.com\", password: \"TestStaff##123\") { token user { isStaff } } }"}'
+```
+
+### 6.4 — Persist the Credentials in `.env.local`
+
+The integration tests read these env vars (see
+`tests/integration/conftest.py`):
+
+```env
+# Admin (Step 6.1) — used by fixtures to mint test users on the fly
+SALEOR_ADMIN_EMAIL=admin@gmail.com
+SALEOR_ADMIN_PASSWORD=Admin##123
+
+# Test customer (Step 6.2)
+SALEOR_TEST_USER_EMAIL=testuser.podstylist@gmail.com
+SALEOR_TEST_USER_PASSWORD=TestUser##123
+
+# Test staff (Step 6.3)
+SALEOR_TEST_STAFF_EMAIL=teststaff.podstylist@gmail.com
+SALEOR_TEST_STAFF_PASSWORD=TestStaff##123
+```
+
+> `.env.local` is git-ignored (see `.gitignore`: `.env` / `.env.*` are
+> excluded except `.env.example` and `.env.template`).  The corresponding
+> placeholders live in `.env.example` so other contributors know which
+> variables to set.

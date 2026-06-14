@@ -2,7 +2,8 @@
 
 The canonical home for each schema is now:
   - ``schemas.common``  — HealthResponse, PaginatedResponse, ErrorResponse, CursorPage
-  - ``schemas.thread``  — CreateThreadRequest, ThreadResponse, ThreadListResponse
+  - ``schemas.thread``  — CreateThreadRequest, ThreadResponse, ThreadListResponse,
+                          HistoryImageItem, HistoryMessage, ThreadHistoryResponse
   - ``schemas.chat``    — ChatRequest, ChatChunk, UsagePayload, DonePayload
   - ``schemas.webhook`` — SaleorWebhookPayload
 
@@ -14,7 +15,14 @@ from __future__ import annotations
 
 from app.schemas.chat import ChatChunk, ChatRequest, DonePayload, ProductItem, UsagePayload
 from app.schemas.common import CursorPage, ErrorResponse, HealthResponse, PaginatedResponse
-from app.schemas.thread import CreateThreadRequest, ThreadListResponse, ThreadResponse
+from app.schemas.thread import (
+    CreateThreadRequest,
+    HistoryImageItem,
+    HistoryMessage,
+    ThreadHistoryResponse,
+    ThreadListResponse,
+    ThreadResponse,
+)
 from app.schemas.webhook import SaleorWebhookPayload
 
 # Legacy alias kept for any existing references.
@@ -28,9 +36,12 @@ __all__ = [
     "DonePayload",
     "ErrorResponse",
     "HealthResponse",
+    "HistoryImageItem",
+    "HistoryMessage",
     "PaginatedResponse",
     "ProductItem",
     "SaleorWebhookPayload",
+    "ThreadHistoryResponse",
     "ThreadListResponse",
     "ThreadResponse",
     "UsagePayload",
