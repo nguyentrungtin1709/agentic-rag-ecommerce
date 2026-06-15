@@ -14,7 +14,7 @@
 > - `[DONE]` — implementation complete, tests passing
 > - `[PENDING]` — work not yet started
 >
-> Phases 1–9 are `[DONE]`.  Phases 10–14 are `[PENDING]`.
+> Phases 1–10 are `[DONE]`.  Phases 11–14 are `[PENDING]`.
 
 ---
 
@@ -68,8 +68,8 @@ webhook → Celery dispatch chain, (e) the cleanup Celery tasks, and
 | `ProductRetriever` | `src/app/rag/retriever.py` | DELETE — deprecated by Phase 4 product_rag subagent |
 | `process_webhook` task | `src/app/tasks/process_webhook.py` | STUB |
 | `reindex_products` task | `src/app/tasks/reindex_products.py` | STUB |
-| `cleanup_expired_threads` task | `src/app/tasks/cleanup_expired_threads.py` | STUB |
-| `delete_thread` task | `src/app/tasks/delete_thread.py` | STUB |
+| `cleanup_expired_threads` task | `src/app/tasks/cleanup_expired_threads.py` | DONE (Phase 10) — NFR-015 chain, sequential sweep, `set_status('deleting')` per thread |
+| `delete_thread` task | `src/app/tasks/delete_thread.py` | DONE (Phase 10) — NFR-015 chain, transient-error retry, structured return value |
 | slowapi rate limit | `src/app/main.py` | NOT WIRED — dep + env present |
 | fastapi-cache2 | `src/app/main.py` | NOT WIRED — dep + env present |
 | `tests/unit/services/` | — | EMPTY directory |
@@ -91,7 +91,7 @@ webhook → Celery dispatch chain, (e) the cleanup Celery tasks, and
 | 7 | Webhook handling | `api/webhooks.py` Celery dispatch, `process_webhook` task real | DONE |
 | 8 | Thread Management API | 5 thread endpoints + history + status guards + cache invalidation | DONE |
 | 9 | Profile + Admin API | 4 admin endpoints (profile, reindex trigger, reindex list, all threads) | DONE |
-| 10 | Cleanup Celery tasks | `delete_thread` + `cleanup_expired_threads` real | PENDING |
+| 10 | Cleanup Celery tasks | `delete_thread` + `cleanup_expired_threads` real | DONE |
 | 11 | Trend Scout | TrendScoutNode via `create_react_agent` + Tavily + DuckDuckGo | PENDING |
 | 12 | Synthesize + Title Generation | `synthesize.py` + `generate_title.py` real (4-prompt dispatch) | PENDING |
 | 13 | Image Generation | `generate_image.py` real — DALL-E + S3 + Valkey quota | PENDING |
@@ -653,7 +653,34 @@ close the Phase 6 REST gap.
 
 ---
 
-## Phase 10 — Cleanup Celery tasks
+## Phase 10 — Cleanup Celery tasks — DONE
+
+**Result**: 441 tests passing (+18 from Phase 9 baseline of 423),
+3 skipped when stack offline, 90.57% coverage (Phase 10 modules
+`tasks/cleanup_expired_threads` and `tasks/delete_thread` at 100%).
+See `temp/phase-10-cleanup-tasks.md` for the full write-up and
+`history/10_0_0_CLEANUP_TASKS.md` for the decision record
+(D10.1, D10.2, D10.3, D10.4, D10.5).
+
+### Divergences from the original Phase 10 spec
+
+- **Configurable expiry window** — the spec said "30 days"; we made
+  it `Settings.thread_expiry_days` (default 30, FR-018) so dev
+  environments can shorten the window via `THREAD_EXPIRY_DAYS` in
+  `.env` / `.env.example`.  Two new unit tests cover both the
+  default-cutoff and the custom-cutoff paths.
+- **Sweep path uses `delete_by_id`, not `delete`** — the original
+  spec only mentioned `ThreadRepository.delete(thread_id, user_id)`,
+  but the sweep has no user context, so a new
+  `ThreadRepository.delete_by_id(thread_id)` (no `user_id`
+  predicate, D10.4) was added.  User-facing deletion still goes
+  through `delete` and retains its owner check.
+- **Integration tests call `_process` directly** — the Celery
+  wrapper uses `asyncio.run()` which is forbidden inside pytest-
+  asyncio's running loop.  The integration tests therefore call
+  the inner `_process` coroutine directly and patch the pool/
+  S3 dependencies.  The Celery wrapper itself (asyncio.run +
+  try/except + retry) is fully covered by the unit tests.
 
 ### Objective
 
