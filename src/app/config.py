@@ -109,6 +109,18 @@ class Settings(BaseSettings):
     title_generation_max_attempts: int = Field(default=3)
     title_truncation_length: int = Field(default=50)
 
+    # ── Thread Cleanup ──────────────────────────────────────────────────────
+    thread_expiry_days: int = Field(
+        default=30,
+        ge=1,
+        description=(
+            "Inactivity window (days) after which a thread is eligible "
+            "for hard deletion by the nightly ``cleanup_expired_threads`` "
+            "sweep (FR-018).  Lower this in dev to exercise the sweep "
+            "without waiting weeks."
+        ),
+    )
+
     # ── Rate Limiting ───────────────────────────────────────────────────────
     rate_limit_chat: str = Field(default="20/minute")
     rate_limit_thread_create: str = Field(default="10/minute")

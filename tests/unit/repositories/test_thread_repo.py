@@ -195,3 +195,38 @@ async def test_list_all_with_unknown_cursor_returns_empty(
 
     assert result == []
     conn.fetch.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# delete_by_id (Phase 10, D10.4 — sweep path)
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_by_id_removes_row_without_owner_check(
+    repo: ThreadRepository, mock_asyncpg_pool: tuple[MagicMock, AsyncMock]
+) -> None:
+    """Sweep path — no ``user_id`` predicate, just id (D10.4)."""
+    _pool, conn = mock_asyncpg_pool
+    conn.execute.return_value = "DELETE 1"
+    thread_id = uuid.uuid4()
+
+    result = await repo.delete_by_id(thread_id)
+
+    assert result is True
+    sql, arg = conn.execute.call_args.args
+    assert sql == "DELETE FROM threads WHERE id = $1"
+    assert "user_id" not in sql
+    assert arg == thread_id
+
+
+async def test_delete_by_id_returns_false_when_row_missing(
+    repo: ThreadRepository, mock_asyncpg_pool: tuple[MagicMock, AsyncMock]
+) -> None:
+    """``delete_by_id`` returns ``False`` when the row was not found
+    (idempotent re-run is a no-op)."""
+    _pool, conn = mock_asyncpg_pool
+    conn.execute.return_value = "DELETE 0"
+
+    result = await repo.delete_by_id(uuid.uuid4())
+
+    assert result is False

@@ -317,6 +317,31 @@ class ThreadRepository:
             logger.info("Thread deleted", thread_id=str(thread_id), user_id=user_id)
         return deleted
 
+    async def delete_by_id(self, thread_id: uuid.UUID) -> bool:
+        """Hard-delete a thread row by id only (no owner check).
+
+        Used by the nightly ``cleanup_expired_threads`` sweep
+        (Phase 10, D10.4) which has no user context — the sweep
+        deletes rows for all users, so the user_id predicate from
+        :meth:`delete` cannot be applied.  For user-facing deletion
+        that needs the ownership guarantee, use :meth:`delete`.
+
+        Args:
+            thread_id: UUID of the thread to delete.
+
+        Returns:
+            ``True`` if a row was deleted, ``False`` if not found.
+        """
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM threads WHERE id = $1",
+                thread_id,
+            )
+        deleted = result == "DELETE 1"
+        if deleted:
+            logger.info("Thread deleted (sweep)", thread_id=str(thread_id))
+        return deleted
+
     async def find_expired(self, cutoff: datetime) -> list[uuid.UUID]:
         """Return IDs of threads whose last activity is older than ``cutoff``.
 
