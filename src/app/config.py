@@ -39,7 +39,7 @@ class Settings(BaseSettings):
 
     # ── LLM Model Names ─────────────────────────────────────────────────────
     response_model: str = Field(default="gpt-4o")
-    orchestrator_model: str = Field(default="gpt-4o-mini")
+    orchestrator_model: str = Field(default="gpt-5.4-mini")
     title_model: str = Field(default="gpt-4o-mini")
     embedding_model: str = Field(default="text-embedding-3-small")
     embedding_dims: int = Field(default=1536)

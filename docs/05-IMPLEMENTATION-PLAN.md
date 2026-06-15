@@ -14,7 +14,7 @@
 > - `[DONE]` — implementation complete, tests passing
 > - `[PENDING]` — work not yet started
 >
-> Phases 1–10 are `[DONE]`.  Phases 11–14 are `[PENDING]`.
+> Phases 1–11 are `[DONE]`.  Phases 12–14 are `[PENDING]`.
 
 ---
 
@@ -63,7 +63,7 @@ webhook → Celery dispatch chain, (e) the cleanup Celery tasks, and
 | `synthesize` node | `src/app/agent/nodes/synthesize.py` | STUB |
 | `generate_title` node | `src/app/agent/nodes/generate_title.py` | STUB |
 | `generate_image` node | `src/app/agent/nodes/generate_image.py` | STUB |
-| TrendScout subagent | `src/app/agent/subagents/trend_scout/agent.py` | STUB |
+| TrendScout subagent | `src/app/agent/subagents/trend_scout/agent.py` | DONE (Phase 11) — `create_agent` + Tavily (private DDG fallback) + `SummarizationMiddleware` |
 | `ProductIndexer` | `src/app/rag/indexer.py` | STUB |
 | `ProductRetriever` | `src/app/rag/retriever.py` | DELETE — deprecated by Phase 4 product_rag subagent |
 | `process_webhook` task | `src/app/tasks/process_webhook.py` | STUB |
@@ -92,7 +92,7 @@ webhook → Celery dispatch chain, (e) the cleanup Celery tasks, and
 | 8 | Thread Management API | 5 thread endpoints + history + status guards + cache invalidation | DONE |
 | 9 | Profile + Admin API | 4 admin endpoints (profile, reindex trigger, reindex list, all threads) | DONE |
 | 10 | Cleanup Celery tasks | `delete_thread` + `cleanup_expired_threads` real | DONE |
-| 11 | Trend Scout | TrendScoutNode via `create_react_agent` + Tavily + DuckDuckGo | PENDING |
+| 11 | Trend Scout | TrendScoutNode via `create_agent` + Tavily (private DDG fallback) + `SummarizationMiddleware` | DONE |
 | 12 | Synthesize + Title Generation | `synthesize.py` + `generate_title.py` real (4-prompt dispatch) | PENDING |
 | 13 | Image Generation | `generate_image.py` real — DALL-E + S3 + Valkey quota | PENDING |
 | 14 | Chat SSE endpoint | `api/chat.py` real — 7 SSE event types + shared-resource injection | PENDING |
@@ -718,53 +718,121 @@ then image records, then the thread row.
 
 ---
 
-## Phase 11 — Trend Scout
+## Phase 11 — Trend Scout — DONE
+
+**Result**: 461 tests passing (+20 from Phase 10 baseline of 441),
+3 skipped when stack offline, ruff + pyright clean across the new
+TrendScout package and its tests. See `temp/phase-11-trend-scout.md`
+for the full write-up and `history/11_0_0_TREND_SCOUT.md` for the
+decision record (D11.1 - D11.13).
+
+### Divergences from the original Phase 11 spec
+
+- **`create_agent` replaces `create_react_agent`** (D11.1) — the
+  original spec named the deprecated `langgraph.prebuilt.create_react_agent`
+  factory. We use the new `langchain.agents.create_agent` (added in
+  `langchain>=1.1`) which is the supported entry point going forward.
+- **Single exposed tool + private DDG fallback** (D11.12) — the
+  spec called for two `@tool`-decorated functions; we expose
+  `tavily_search` only and keep `duckduckgo_search` as a plain
+  module-level function. The LLM never picks the fallback — the
+  tool body cascades internally — so the schema stays clean and
+  the model never wastes a round-trip.
+- **`SummarizationMiddleware` for long threads** (D11.13) — the
+  original spec said "prepend the SystemMessage to the last 4
+  messages"; we instead attach a `SummarizationMiddleware` whose
+  trigger is `("tokens", int(0.8 * model.profile["max_input_tokens"]))`
+  and `keep=("messages", 20)`. Bounded history is more robust than
+  a fixed 4-message window.
+- **No separate `trend_scout_model`** (D11.8) — the spec and an
+  earlier draft of the D11 record both proposed a dedicated
+  `trend_scout_model` setting; the user confirmed we reuse
+  `settings.orchestrator_model`. The subagent is research-only
+  (no structured output shaping that needs a different model), so
+  one model name is enough.
+- **Config default aligned to `gpt-5.4-mini`** (D11.11) — the
+  pre-Phase-11 default of `gpt-4o-mini` for `orchestrator_model`
+  did not match the project's `gpt-5.4-mini` default for the
+  other LLM model settings (`rerank_model`, `summarize_model`).
+  Phase 11 aligns the default.
+- **`api_key` passed via callable, not `os.environ`** — early
+  drafts mirrored `OPENAI_API_KEY` / `TAVILY_API_KEY` to
+  `os.environ` at import time. That polluted the test process and
+  broke `test_settings_missing_required_field`, so we pass the
+  values explicitly: `ChatOpenAI(api_key=lambda: settings.openai_api_key)`
+  and `TavilySearchResults(tavily_api_key=settings.tavily_api_key)`.
+  `DuckDuckGoSearchRun` construction is wrapped in a defensive
+  `try/except` because the project's pinned `duckduckgo-search==8.1.1`
+  does not match `langchain_community==0.4.2`'s expected `ddgs`
+  package; the follow-up is tracked as a `pyproject.toml` update.
 
 ### Objective
 
-Implement `run_trend_scout` as a real LangChain `create_react_agent`
-with two tools: Tavily (primary) and DuckDuckGo (fallback).  Output
-is a concise trend summary + an optional DALL-E prompt.
+Implement `run_trend_scout` as a real LangChain `create_agent`
+with a Tavily (primary) + DuckDuckGo (fallback) search stack and a
+`SummarizationMiddleware` for bounded message history. Output is
+a concise trend summary + an optional DALL-E prompt.
 
 ### Tasks
 
 #### 11.1 State and schema
 
-- `TrendScoutState` extends `langchain.agents.AgentState` with
-  `generate_image: bool`.
-- `TrendScoutOutput` Pydantic model: `trend_summary: str`,
-  `image_prompt: str | None`.
+- `TrendScoutState` extends `langchain.agents.AgentState` (D11.4)
+  with `generate_image: bool`.
+- `TrendScoutOutput` Pydantic model (D11.5): `trend_summary: str | None`,
+  `image_prompt: str | None` — both fields nullable so a single
+  schema covers both a successful research report and the
+  graceful-degradation "no synthesis" outcome (D11.6).
 
 #### 11.2 Tools (`subagents/trend_scout/tools.py`)
 
-- `TavilySearchResults(max_results=5)` (uses `TAVILY_API_KEY`).
-- `@tool duckduckgo_search(query: str) -> str` wrapping
-  `DuckDuckGoSearchRun()`.
+- `TavilySearchResults(max_results=5, tavily_api_key=settings.tavily_api_key)`
+  — primary backend (FR-042).
+- Plain module-level `duckduckgo_search(query, max_results=5)` helper
+  (D11.12) — not a `@tool`. Called only from inside `tavily_search`
+  when Tavily raises (FR-043). The tool body cascades the fallback
+  so the LLM never sees two tools to choose between.
+- `tavily_search` is exposed as the only `@tool` to the LLM.
+- `DuckDuckGoSearchRun` construction is defensive: when the `ddgs`
+  package is missing the client is set to `None` and
+  `duckduckgo_search` raises `RuntimeError` (D11.6 graceful
+  degradation contract).
 
 #### 11.3 `_build_trend_scout_system` helper
 
 - Base prompt from `trend_scout_system.md`.
 - Append `## Conversation history summary` (if `state["summary"]`
   non-empty), `## User preferences` (if profile non-empty),
-  `## Products already recommended` (if `retrieved_products` non-empty),
-  and `## Output note` (if `generate_image=True`).
+  `## Products already recommended` (if `retrieved_products`
+  non-empty), and `## Output note` (if `generate_image=True`).
+- Sections are appended in that fixed order, separated by blank
+  lines, and only when the corresponding field is non-empty.
 
 #### 11.4 Agent + wrapper
 
-- `create_react_agent(model=ChatOpenAI(settings.orchestrator_model), tools=[...], state_schema=TrendScoutState)`.
-- `run_trend_scout(state, config)` builds the dynamic
-  `SystemMessage`, prepends it to the last 4 messages, calls
-  `ainvoke`, and parses the output into `TrendScoutOutput`.
-- Fallback: if both Tavily and DuckDuckGo raise, return
-  `{"trend_summary": None, "image_prompt": None}`.
+- `_build_trend_scout_graph()` constructs a
+  `create_agent(model=ChatOpenAI(model=settings.orchestrator_model, api_key=lambda: settings.openai_api_key), tools=[tavily_search], state_schema=TrendScoutState, response_format=TrendScoutOutput, middleware=[SummarizationMiddleware(model=ChatOpenAI(...), trigger=("tokens", int(0.8 * model.profile["max_input_tokens"])), keep=("messages", 20))])`
+  subgraph (D11.1, D11.7, D11.8, D11.12, D11.13).
+- `run_trend_scout(state, config)` (D11.3, D11.9) builds the dynamic
+  `SystemMessage`, prepends it to the full `state["messages"]` (no
+  last-N truncation -- summarization handles that), and forwards
+  `correlation_id` via `config["metadata"]` for LangSmith traces.
+- Subgraph is compiled once at import time as
+  `_TREND_SCOUT_GRAPH` and reused across calls (D11.7). The
+  parent's `AsyncPostgresSaver` handles thread-level checkpoints.
+- Fallback (D11.6): if the subgraph raises OR returns no
+  `structured_response`, the wrapper returns
+  `{"trend_summary": None, "image_prompt": None}` so the
+  orchestrator can route to `synthesize` with a clean partial
+  state update.
 
 ### Tests to Write
 
 | Test File | Test Cases |
 |---|---|
-| `tests/unit/agent/subagents/test_trend_scout_tools.py` | `duckduckgo_search` is a valid LangChain tool; `tavily_search` is configured with `max_results=5` |
-| `tests/unit/agent/subagents/test_trend_scout_system.py` | Each context section appears when its data is non-empty; image-prompt instruction is present when `generate_image=True`; sections are omitted when empty |
-| `tests/unit/agent/subagents/test_trend_scout_wrapper.py` | `SystemMessage` is prepended as `messages[0]`; `generate_image` flows into sub-state; `trend_summary` and `image_prompt` are mapped back to parent state; fallback returns `None` for both fields when both tools fail |
+| `tests/unit/agent/subagents/test_trend_scout_tools.py` | `tavily_search` returns parsed `list[dict]` on success; falls back to `duckduckgo_search` on Tavily exception; `duckduckgo_search` parses DDG string output to `list[dict]`; raises `RuntimeError` when DDG itself fails; `tavily_search` is a `@tool` with name+description; D11.12 contract: `duckduckgo_search` is a plain function (no `.name` attribute) |
+| `tests/unit/agent/subagents/test_trend_scout_system.py` | All-empty inputs return just the base prompt; non-empty `summary` adds the summary section; non-None `user_profile` adds the JSON section; non-empty `retrieved_products` adds the products section with fallback to `product_id` when `name` is missing; `generate_image=True` adds the image-output note |
+| `tests/unit/agent/subagents/test_trend_scout_wrapper.py` | Successful invocation projects `structured_response` to `trend_summary` and `image_prompt`; the SystemMessage is injected as `messages[0]`; `generate_image` flows into the sub-state; `correlation_id` is attached to `config['metadata']`; parent config is merged when provided; subgraph-raises -> `{None, None}` (D11.6); missing-or-wrong-type `structured_response` -> `{None, None}`; D11.12 + D11.13 build-time contract: only `tavily_search` in `tools` and a `SummarizationMiddleware` with `("tokens", N)` trigger |
 
 ---
 
@@ -1049,9 +1117,11 @@ will be exercised by these phases:
 - `fastapi-cache2==0.2.2` (Phase 5, 8)
 - `prometheus-fastapi-instrumentator==8.0.0` (Phase 1, mounted)
 - `openinference-instrumentation-llama-index==4.4.2` (Phase 1, mounted)
-- `tavily-python` (Phase 11)
+- `tavily-python` (Phase 11, via `langchain-community.tavily_search`)
 - `langchain-community` (Phase 11, for `DuckDuckGoSearchRun`)
 - `fastembed` (Phase 4, 6, 7 — pulled by `qdrant-client[fastembed]`)
+- **D11.10 follow-up**: add `ddgs` to `pyproject.toml` so the
+  `DuckDuckGoSearchRun` defensive `try/except` can be removed.
 
 ---
 
