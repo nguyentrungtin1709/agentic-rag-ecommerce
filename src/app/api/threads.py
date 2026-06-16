@@ -299,26 +299,31 @@ def _is_ai(message: BaseMessage | object) -> bool:
 
 def _format_message(
     message: BaseMessage,
-    images_by_msg: dict[str, list],
+    images_by_ai: dict[str, list],
 ) -> HistoryMessage | None:
     """Build a ``HistoryMessage`` from a raw LangChain ``BaseMessage``.
 
     Returns ``None`` for ``SystemMessage`` / ``ToolMessage`` so the
     caller can filter them out with a single ``if m is None: continue``.
 
-    Images are looked up by the ``id`` of the message itself — the
-    history endpoint attaches images to the ``AIMessage`` that
-    immediately follows the originating ``HumanMessage`` (the
-    history handler pre-computes the mapping so this function does
-    not need to know about turn structure).
+    Images are looked up by the ``AIMessage.id`` of the message itself
+    (F8.2 / F8.3).  Even though ``GeneratedImage.request_message_id``
+    points at the originating ``HumanMessage.id`` — because the image
+    is created in a parallel branch of the graph before the
+    ``AIMessage`` exists — the *response* always attaches images to
+    the AI turn.  The history handler pre-walks the page in
+    chronological order to copy each ``HumanMessage``'s images onto
+    the following ``AIMessage`` (see ``get_thread_history``), so this
+    function only needs to do ``images_by_ai.get(ai_id, [])``.
 
     Args:
         message: A ``BaseMessage`` (or any duck-typed object) read
             from the LangGraph state.
-        images_by_msg: ``{message_id -> [GeneratedImage, ...]}`` as
-            returned by ``image_repo.list_by_message_ids``.  The
-            same dict is passed in for every message; we read by
-            ``getattr(message, "id", None)``.
+        images_by_ai: ``{ai_message_id -> [GeneratedImage, ...]}`` —
+            pre-computed by the history handler so each AI turn in
+            the page carries the images generated for the human
+            turn that opened it.  Keys are AI message ids; values
+            are in chronological order (oldest first).
 
     Returns:
         The ``HistoryMessage`` view, or ``None`` if the message
@@ -336,7 +341,7 @@ def _format_message(
             images=[],
         )
     if _is_ai(message):
-        images = images_by_msg.get(msg_id, [])
+        images = images_by_ai.get(msg_id, [])
         return HistoryMessage(
             id=msg_id,
             type="ai",
@@ -400,9 +405,13 @@ async def get_thread_history(
 
     Image attachment: the handler runs a single batch query
     (``image_repo.list_by_message_ids``) covering every
-    ``HumanMessage.id`` in the page and groups the results by id.
-    The relevant images are then attached to the ``AIMessage`` that
-    follows each human message in the page.
+    ``HumanMessage.id`` in the page.  Because image rows are
+    written with ``request_message_id`` pointing at the originating
+    human turn (F8.1), the result is keyed by human id.  The
+    handler then walks the page in chronological order and copies
+    the relevant images onto the ``AIMessage`` that follows each
+    human message (F8.2 / F8.4), producing a ``images_by_ai`` map
+    keyed by ``AIMessage.id`` that ``_format_message`` reads from.
 
     Args:
         request: Inbound FastAPI request.
@@ -480,13 +489,39 @@ async def get_thread_history(
                 break
         page = chat_messages[round_idx : abs_idx + len(page)]
 
-    # Batch-load images for every human message in the page.
+    # Batch-load images for every human message in the page.  The repo
+    # returns ``{human_message_id -> [GeneratedImage, ...]}`` because
+    # ``GeneratedImage.request_message_id`` is the originating
+    # ``HumanMessage.id`` (FR-051): the image is created in a parallel
+    # branch of the graph before the ``AIMessage`` exists, so we have
+    # no AI id to key on at write time.  The response, however, must
+    # attach the images to the ``AIMessage`` that follows the human
+    # turn (D8.9 / F8.1-F8.2) — we project the map below.
     human_ids = [str(getattr(m, "id", "")) for m in page if _is_human(m)]
-    images_by_msg = await image_repo.list_by_message_ids(human_ids) if human_ids else {}
+    images_by_human: dict[str, list] = (
+        await image_repo.list_by_message_ids(human_ids) if human_ids else {}
+    )
+
+    # Walk the page in chronological order, tracking the most recent
+    # human message and copying its images onto each subsequent AI
+    # message (F8.2).  A single human turn may trigger multiple
+    # images (F8.4) — the repo already returns a list per id, so the
+    # attachment is naturally multi-image.  Human messages never
+    # carry images in the response (F8.3).
+    images_by_ai: dict[str, list] = {}
+    last_human_id: str | None = None
+    for msg in page:
+        msg_id = str(getattr(msg, "id", None) or "")
+        if _is_human(msg):
+            last_human_id = msg_id
+        elif _is_ai(msg) and last_human_id is not None:
+            attached = images_by_human.get(last_human_id, [])
+            if attached:
+                images_by_ai[msg_id] = attached
 
     response_messages = [
         formatted
-        for formatted in (_format_message(m, images_by_msg) for m in page)
+        for formatted in (_format_message(m, images_by_ai) for m in page)
         if formatted is not None
     ]
 

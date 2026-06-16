@@ -635,7 +635,15 @@ async def test_history_filters_system_and_tool_messages(
 
 
 async def test_history_uses_batch_image_lookup(app: FastAPI) -> None:
-    """Images are looked up in a single batch query, not N+1."""
+    """Images are looked up in a single batch query, not N+1.
+
+    The repo returns images keyed by ``HumanMessage.id`` (F8.1) —
+    the storage contract is that ``request_message_id`` always
+    points at the originating human turn.  The handler walks the
+    page in chronological order to project those images onto the
+    following ``AIMessage`` (F8.2), so a single turn may carry
+    multiple images (F8.4).
+    """
     thread = _make_thread()
     thread_repo = AsyncMock()
     thread_repo.get = AsyncMock(return_value=thread)
@@ -650,13 +658,11 @@ async def test_history_uses_batch_image_lookup(app: FastAPI) -> None:
             ]
         )
     )
-    img1 = _make_image("a1", url="https://x/1.png", prompt="one")
-    img2a = _make_image("a2", url="https://x/2a.png", prompt="two-a")
-    img2b = _make_image("a2", url="https://x/2b.png", prompt="two-b")
+    img1 = _make_image("h1", url="https://x/1.png", prompt="one")
+    img2a = _make_image("h2", url="https://x/2a.png", prompt="two-a")
+    img2b = _make_image("h2", url="https://x/2b.png", prompt="two-b")
     image_repo = MagicMock()
-    image_repo.list_by_message_ids = AsyncMock(
-        return_value={"h1": [], "h2": [], "a1": [img1], "a2": [img2a, img2b]}
-    )
+    image_repo.list_by_message_ids = AsyncMock(return_value={"h1": [img1], "h2": [img2a, img2b]})
     app.dependency_overrides[get_thread_repo] = _make_thread_repo_override(thread_repo)
     app.dependency_overrides[get_image_repo] = _make_image_repo_override(image_repo)
     app.dependency_overrides[get_graph] = _make_request_override(graph)
@@ -667,7 +673,10 @@ async def test_history_uses_batch_image_lookup(app: FastAPI) -> None:
             response = await client.get(f"/api/v1/threads/{thread.id}/history")
         assert response.status_code == 200
         body = response.json()
-        # The first AI message has one image, the second has two.
+        # Human messages never carry images in the response (F8.3).
+        assert body["messages"][0]["images"] == []
+        assert body["messages"][2]["images"] == []
+        # The first AI message has one image (from h1), the second has two (from h2).
         assert body["messages"][1]["images"] == [{"url": "https://x/1.png", "prompt": "one"}]
         assert body["messages"][3]["images"] == [
             {"url": "https://x/2a.png", "prompt": "two-a"},
@@ -675,6 +684,65 @@ async def test_history_uses_batch_image_lookup(app: FastAPI) -> None:
         ]
         # Critical: the batch query was called exactly once (not 2+).
         image_repo.list_by_message_ids.assert_awaited_once()
+    finally:
+        app.dependency_overrides.clear()
+
+
+async def test_history_attaches_image_to_following_ai_message(app: FastAPI) -> None:
+    """F8.5 — the bug scenario.
+
+    An image row whose ``request_message_id`` is ``h1`` must surface
+    on the ``AIMessage(id="a1")`` that immediately follows ``h1`` —
+    not on ``h1`` itself, and not on the second AI message ``a2``.
+    The repo returns the image keyed by human id (F8.1); the handler
+    walks the page to project it onto the AI id (F8.2).
+    """
+    thread = _make_thread()
+    thread_repo = AsyncMock()
+    thread_repo.get = AsyncMock(return_value=thread)
+    graph = MagicMock()
+    graph.aget_state = AsyncMock(
+        return_value=_state_snapshot(
+            [
+                _human("h1", content="Draw me a t-shirt"),
+                _ai("a1", content="Here is a design"),
+                _human("h2", content="Thanks"),
+                _ai("a2", content="You are welcome"),
+            ]
+        )
+    )
+    img = _make_image(
+        "h1",
+        url="https://cdn.example.com/design.png",
+        prompt="a bold geometric t-shirt print",
+    )
+    image_repo = MagicMock()
+    image_repo.list_by_message_ids = AsyncMock(return_value={"h1": [img], "h2": []})
+    app.dependency_overrides[get_thread_repo] = _make_thread_repo_override(thread_repo)
+    app.dependency_overrides[get_image_repo] = _make_image_repo_override(image_repo)
+    app.dependency_overrides[get_graph] = _make_request_override(graph)
+    app.dependency_overrides[get_current_user] = _make_auth_override({"sub": "user-1"})
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(f"/api/v1/threads/{thread.id}/history")
+        assert response.status_code == 200
+        body = response.json()
+        # The four messages in the page, in order.
+        assert [m["id"] for m in body["messages"]] == ["h1", "a1", "h2", "a2"]
+        # h1 never carries images in the response.
+        assert body["messages"][0]["images"] == []
+        # a1 carries the single image generated for h1.
+        assert body["messages"][1]["images"] == [
+            {
+                "url": "https://cdn.example.com/design.png",
+                "prompt": "a bold geometric t-shirt print",
+            }
+        ]
+        # h2 had no images.
+        assert body["messages"][2]["images"] == []
+        # a2 must NOT inherit the image from h1.
+        assert body["messages"][3]["images"] == []
     finally:
         app.dependency_overrides.clear()
 
