@@ -23,7 +23,7 @@ tools fail (D11.6).
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, Optional, cast
 
 import structlog
 from langchain.agents import create_agent
@@ -149,7 +149,7 @@ _TREND_SCOUT_GRAPH = _build_trend_scout_graph()
 
 async def run_trend_scout(
     state: AgentState,
-    config: RunnableConfig | None = None,
+    config: Optional[RunnableConfig] = None,  # noqa: UP045 — LangGraph introspection requires ``Optional[X]``, not PEP 604 ``X | None``
 ) -> dict:
     """Run the TrendScout subagent and return trend_summary + image_prompt.
 

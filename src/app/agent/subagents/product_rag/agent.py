@@ -33,6 +33,8 @@ state.
 
 from __future__ import annotations
 
+from typing import Optional
+
 import structlog
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
@@ -116,7 +118,7 @@ _PRODUCT_RAG_GRAPH: CompiledStateGraph = _build_product_rag_graph()
 
 async def run_product_rag(
     state: AgentState,
-    config: RunnableConfig | None = None,
+    config: Optional[RunnableConfig] = None,  # noqa: UP045 — LangGraph introspection requires ``Optional[X]``, not PEP 604 ``X | None``
 ) -> dict:
     """Run the ProductRAG subgraph and return ``retrieved_products``.
 
