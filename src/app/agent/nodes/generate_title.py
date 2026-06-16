@@ -166,7 +166,7 @@ async def generate_title(
     thread_uuid = uuid.UUID(thread_id) if isinstance(thread_id, str) else thread_id
     configurable = (config.get("configurable", {}) if config else {}) or {}
     sse_queue = configurable.get("sse_queue") if isinstance(configurable, dict) else None
-    valkey = configurable.get("valkey") if isinstance(configurable, dict) else None
+    valkey = configurable.get("valkey_service") if isinstance(configurable, dict) else None
 
     # Build a repository against the active asyncpg pool.  Inside a
     # graph run the pool is the long-lived singleton from

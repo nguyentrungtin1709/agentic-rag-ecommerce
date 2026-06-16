@@ -14,7 +14,7 @@
 > - `[DONE]` — implementation complete, tests passing
 > - `[PENDING]` — work not yet started
 >
-> Phases 1–13 are `[DONE]`.  Phase 14 is `[PENDING]`.
+> Phases 1–14 are `[DONE]`.  No new phase is planned.
 
 ---
 
@@ -95,7 +95,7 @@ webhook → Celery dispatch chain, (e) the cleanup Celery tasks, and
 | 11 | Trend Scout | TrendScoutNode via `create_agent` + Tavily (private DDG fallback) + `SummarizationMiddleware` | DONE |
 | 12 | Synthesize + Title Generation | `synthesize.py` + `generate_title.py` real (4-prompt dispatch) | DONE |
 | 13 | Image Generation | `generate_image.py` real — DALL-E + S3 + Valkey quota | DONE |
-| 14 | Chat SSE endpoint | `api/chat.py` real — 7 SSE event types + shared-resource injection | PENDING |
+| 14 | Chat SSE endpoint | `api/chat.py` real — 7 SSE event types + shared-resource injection | DONE |
 
 ---
 
@@ -503,9 +503,10 @@ any mutation.
 
 #### 8.6 `POST /api/v1/threads/{thread_id}/runs/stream`
 
-- 501 stub for now; full implementation in Phase 14.  Phase 14
-  will add the busy/idle state transition and the
-  shared-resource injection.
+- Implemented in Phase 14 (DONE): full SSE endpoint with status
+  guards, atomic busy/idle transition, Path A shared-resource
+  injection, and 7 event types (`token`, `products`, `image_ready`,
+  `image_failed`, `thread_title`, `done`, `error`).
 
 #### 8.7 Cache invalidation helper
 
@@ -991,7 +992,7 @@ the implementation log is at
 
 ---
 
-## Phase 14 — Chat SSE endpoint
+## Phase 14 — Chat SSE endpoint [DONE]
 
 ### Objective
 

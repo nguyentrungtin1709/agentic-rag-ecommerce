@@ -65,10 +65,15 @@ def _make_config(
     sse_queue: asyncio.Queue | None = None,
     valkey: Any = None,
 ) -> RunnableConfig:
-    """Build a RunnableConfig carrying ``sse_queue`` and ``valkey``."""
+    """Build a RunnableConfig carrying ``sse_queue`` and ``valkey_service``.
+
+    The legacy bare key ``"valkey"`` was renamed to ``"valkey_service"``
+    in Phase 14 (D14.9) to match the ``*_service`` convention used for
+    ``s3_service`` and the class name ``ValkeyService``.
+    """
     return cast(
         "RunnableConfig",
-        {"configurable": {"sse_queue": sse_queue, "valkey": valkey}},
+        {"configurable": {"sse_queue": sse_queue, "valkey_service": valkey}},
     )
 
 

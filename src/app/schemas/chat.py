@@ -126,3 +126,23 @@ class ImageFailedPayload(BaseModel):
     """
 
     reason: str
+
+
+class ErrorPayload(BaseModel):
+    """Payload of the ``error`` SSE event (Phase 14, D14.6).
+
+    Emitted by the chat endpoint when the graph task raises
+    an unhandled exception.  The stream always terminates
+    with one ``error`` event followed by the implicit end of
+    the response (no ``done`` event is emitted on error).
+
+    Attributes:
+        code: Short machine-readable code — e.g.
+            ``"internal_error"``, ``"graph_timeout"``.
+        message: Human-readable, sanitised error summary.
+            Never includes raw exception tracebacks, PII, or
+            internal hostnames.
+    """
+
+    code: str
+    message: str

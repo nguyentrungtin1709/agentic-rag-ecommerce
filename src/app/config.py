@@ -104,6 +104,19 @@ class Settings(BaseSettings):
     max_agent_steps: int = Field(default=10)
     agent_fallback_threshold: int = Field(default=2)
     image_daily_limit: int = Field(default=10)
+    chat_run_timeout_seconds: int = Field(
+        default=120,
+        ge=10,
+        description=(
+            "Hard timeout for a single chat run (D14.10).  ``asyncio.timeout`` "
+            "wraps ``graph.ainvoke`` in the chat endpoint; on expiry the "
+            "background task emits an ``error {code: graph_timeout}`` SSE "
+            "event and resets the thread to idle.  Default 120s leaves headroom "
+            "for a single extra node hop beyond the per-node 10s/30s/60s LLM "
+            "timeouts (NFR-010).  Lower this in dev to exercise the timeout path "
+            "without waiting two minutes."
+        ),
+    )
 
     # ── Thread Auto-Naming ──────────────────────────────────────────────────
     title_generation_max_attempts: int = Field(default=3)

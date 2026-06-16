@@ -220,6 +220,52 @@ class ThreadRepository:
             )
         logger.debug("Thread status updated", thread_id=str(thread_id), status=status)
 
+    async def set_status_if_idle(
+        self,
+        thread_id: uuid.UUID,
+        user_id: str,
+        new_status: str,
+    ) -> bool:
+        """Atomically transition a thread from ``'idle'`` to ``new_status``.
+
+        Single-statement UPDATE with a WHERE clause on the current
+        status guarantees the flip is race-free under concurrent
+        requests for the same thread (FR-014, D14.3).  Used by the
+        chat endpoint to claim a thread for a new run.
+
+        Args:
+            thread_id: UUID of the thread.
+            user_id: Owner check (defence-in-depth).
+            new_status: The target status, e.g. ``'busy'``.
+
+        Returns:
+            ``True`` if exactly one row was updated (i.e. the
+            thread was idle and is now ``new_status``).
+            ``False`` if the row was missing, owned by a different
+            user, or already in a non-idle status.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE threads
+                SET status = $3, updated_at = now()
+                WHERE id = $1
+                  AND user_id = $2
+                  AND status = 'idle'
+                RETURNING id
+                """,
+                thread_id,
+                user_id,
+                new_status,
+            )
+        if row is not None:
+            logger.debug(
+                "Thread status atomically transitioned",
+                thread_id=str(thread_id),
+                new_status=new_status,
+            )
+        return row is not None
+
     async def touch(self, thread_id: uuid.UUID) -> None:
         """Refresh ``last_activity_at`` and ``updated_at`` for a thread.
 
