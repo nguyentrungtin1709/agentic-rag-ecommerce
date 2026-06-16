@@ -69,3 +69,60 @@ class DonePayload(BaseModel):
     thread_id: str
     intent: str | None
     usage: UsagePayload
+
+
+class ProductsPayload(BaseModel):
+    """Payload of the ``products`` SSE event (FR-070).
+
+    Sent exactly once per turn, after the text stream completes, when
+    ``state["retrieved_products"]`` is non-empty.  The frontend uses
+    ``items`` to render the product carousel.  Emitted by the
+    ``synthesize`` node (Phase 12, D12.5).
+    """
+
+    items: list[ProductItem]
+
+
+class ThreadTitlePayload(BaseModel):
+    """Payload of the ``thread_title`` SSE event (FR-022, FR-024).
+
+    Emitted by the ``generate_title`` node (Phase 12, D12.8) the
+    first time a thread gets a title.  Carries the final, persisted
+    title — the frontend updates the sidebar / browser tab without
+    a follow-up HTTP round-trip.
+    """
+
+    title: str
+
+
+class ImageReadyPayload(BaseModel):
+    """Payload of the ``image_ready`` SSE event (FR-053).
+
+    Emitted by the ``generate_image`` node (Phase 13, D13.7) once
+    the DALL-E image is uploaded to S3 and the ``generated_images``
+    row is committed.  Carries the public S3 URL and the prompt
+    that was used to produce the image (for tooltips / re-roll
+    affordances in the UI).
+    """
+
+    url: str
+    prompt: str
+
+
+class ImageFailedPayload(BaseModel):
+    """Payload of the ``image_failed`` SSE event (FR-049).
+
+    Emitted by the ``generate_image`` node when generation is
+    requested but cannot be completed.  The frontend should clear
+    any pending image placeholder and optionally surface a toast.
+
+    Attributes:
+        reason: Short machine-readable code, one of:
+
+            - ``"generation_failed"`` — DALL-E call or S3 upload
+              raised an exception (D13.9).
+            - ``"rate_limit_exceeded"`` — Valkey daily quota
+              exhausted; no LLM call is made (D13.4).
+    """
+
+    reason: str
