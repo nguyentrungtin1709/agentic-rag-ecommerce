@@ -14,7 +14,7 @@
 > - `[DONE]` — implementation complete, tests passing
 > - `[PENDING]` — work not yet started
 >
-> Phases 1–11 are `[DONE]`.  Phases 12–14 are `[PENDING]`.
+> Phases 1–13 are `[DONE]`.  Phase 14 is `[PENDING]`.
 
 ---
 
@@ -60,9 +60,9 @@ webhook → Celery dispatch chain, (e) the cleanup Celery tasks, and
 | Profile API | `src/app/api/profile.py` | DONE — admin reads long-term style profile from `AsyncPostgresStore` (Phase 9) |
 | Admin API | `src/app/api/admin.py` | DONE — reindex trigger (Phase 6) + reindex list + threads list (Phase 9) |
 | Webhook API | `src/app/api/webhooks.py` | PARTIAL — HMAC verify done, Celery dispatch stubbed |
-| `synthesize` node | `src/app/agent/nodes/synthesize.py` | STUB |
-| `generate_title` node | `src/app/agent/nodes/generate_title.py` | STUB |
-| `generate_image` node | `src/app/agent/nodes/generate_image.py` | STUB |
+| `synthesize` node | `src/app/agent/nodes/synthesize.py` | DONE (Phase 12) — 4-prompt intent dispatch, LLM streaming, products / done SSE events |
+| `generate_title` node | `src/app/agent/nodes/generate_title.py` | DONE (Phase 12) — LLM with truncation fallback, thread_title SSE, Valkey cache invalidation |
+| `generate_image` node | `src/app/agent/nodes/generate_image.py` | DONE (Phase 13) — DALL-E + S3 + Valkey quota + image_ready / image_failed SSE |
 | TrendScout subagent | `src/app/agent/subagents/trend_scout/agent.py` | DONE (Phase 11) — `create_agent` + Tavily (private DDG fallback) + `SummarizationMiddleware` |
 | `ProductIndexer` | `src/app/rag/indexer.py` | STUB |
 | `ProductRetriever` | `src/app/rag/retriever.py` | DELETE — deprecated by Phase 4 product_rag subagent |
@@ -93,8 +93,8 @@ webhook → Celery dispatch chain, (e) the cleanup Celery tasks, and
 | 9 | Profile + Admin API | 4 admin endpoints (profile, reindex trigger, reindex list, all threads) | DONE |
 | 10 | Cleanup Celery tasks | `delete_thread` + `cleanup_expired_threads` real | DONE |
 | 11 | Trend Scout | TrendScoutNode via `create_agent` + Tavily (private DDG fallback) + `SummarizationMiddleware` | DONE |
-| 12 | Synthesize + Title Generation | `synthesize.py` + `generate_title.py` real (4-prompt dispatch) | PENDING |
-| 13 | Image Generation | `generate_image.py` real — DALL-E + S3 + Valkey quota | PENDING |
+| 12 | Synthesize + Title Generation | `synthesize.py` + `generate_title.py` real (4-prompt dispatch) | DONE |
+| 13 | Image Generation | `generate_image.py` real — DALL-E + S3 + Valkey quota | DONE |
 | 14 | Chat SSE endpoint | `api/chat.py` real — 7 SSE event types + shared-resource injection | PENDING |
 
 ---
@@ -836,7 +836,7 @@ a concise trend summary + an optional DALL-E prompt.
 
 ---
 
-## Phase 12 — Synthesize + Title Generation
+## Phase 12 — Synthesize + Title Generation — DONE
 
 ### Objective
 
@@ -897,7 +897,7 @@ design for title generation.
 
 ---
 
-## Phase 13 — Image Generation
+## Phase 13 — Image Generation — DONE
 
 ### Objective
 
@@ -949,6 +949,45 @@ emits the corresponding SSE events.
 |---|---|
 | `tests/unit/agent/nodes/test_generate_image.py` | Returns `{}` when `generate_image=False`; quota exceeded emits `image_failed` + returns `{}`; DALL-E success uploads to S3 with `build_key` pattern, inserts `generated_images` row, increments quota, emits `image_ready`; DALL-E failure emits `image_failed {reason: "generation_failed"}` |
 | `tests/unit/services/test_s3_service.py` (extend) | `delete` calls `s3.delete_object`; `build_key` returns spec pattern |
+
+---
+
+## Phase 12 + 13 — combined (Synthesize + Title + Image)
+
+The two terminal main-pipeline nodes (Phase 12) and the parallel
+image-generation branch (Phase 13) ship together because they all
+sit on the same `asyncio.Queue`-based SSE event-bus contract
+defined in `app/agent/nodes/_sse.py`.  The shared
+`emit_sse(queue, event_type, payload)` helper is the single
+emission point; the typed payloads (`ProductsPayload`,
+`ThreadTitlePayload`, `ImageReadyPayload`, `ImageFailedPayload`)
+live in `app/schemas/chat.py` so the wire contract has one
+source of truth.
+
+Key contracts locked in these phases:
+
+- **D12.1–D12.7** (synthesize): intent-to-prompt dispatch, free-form
+  streaming, products / done events, no Pydantic output parser.
+- **D12.8–D12.11** (generate_title): LLM with truncation fallback
+  after `settings.title_generation_max_attempts` (default 3),
+  best-effort Valkey cache invalidation, `thread_title` SSE event.
+- **D13.1–D13.10** (generate_image): DALL-E `b64_json` format,
+  S3 upload, `generated_images` DB row, Valkey daily quota
+  (`image_quota:{user_id}:{date}`, 24h TTL), `image_ready` /
+  `image_failed` events.
+- **DI.X1–DI.X3** (resource injection): `sse_queue` plus
+  `openai_client` / `s3_service` / `valkey_service` are threaded
+  via `config["configurable"]`; in production the chat handler
+  pulls from `app.state`; in tests the fixture injects mocks.
+- **F8.1–F8.5** (history image-attach fix, Commit 0): the API
+  handler walks the page in order, tracking the most recent
+  HumanMessage id, and attaches its images to the following
+  AIMessage.
+
+The full decision record is at
+[`history/12_13_0_SYNTHESIZE_TITLE_IMAGE.md`](../history/12_13_0_SYNTHESIZE_TITLE_IMAGE.md);
+the implementation log is at
+[`temp/phase-12-13-synthesize-title-image.md`](../temp/phase-12-13-synthesize-title-image.md).
 
 ---
 
