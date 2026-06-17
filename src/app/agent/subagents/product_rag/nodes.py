@@ -75,7 +75,7 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.http.models import Condition, FieldCondition, Filter, MatchValue, Range
 
 from app.agent.prompts import load_prompt
-from app.agent.subagents.product_rag.schemas import PrepareQueryOutput
+from app.agent.subagents.product_rag.schemas import PrepareQueryOutput, RerankOutput
 from app.agent.subagents.product_rag.state import ProductRAGState
 from app.config import get_settings
 
@@ -390,9 +390,16 @@ async def llm_postprocess_node(state: ProductRAGState) -> dict:
     the resolved intent.
 
     The LLM (``settings.rerank_model``) is called with structured
-    output (``list[str]`` of product IDs in relevance order).  The
-    returned IDs are mapped back to the corresponding candidate
-    payload dicts and capped at ``qdrant_rerank_top_k``.
+    output (``RerankOutput`` — a Pydantic ``BaseModel`` wrapping a
+    ``ranked_ids: list[str]`` field).  The returned IDs are mapped
+    back to the corresponding candidate payload dicts and capped at
+    ``qdrant_rerank_top_k``.
+
+    Note: a bare ``list[str]`` cannot be used directly with
+    ``with_structured_output`` — LangChain needs a real class to
+    derive a JSON schema from, AND OpenAI's structured-outputs
+    endpoint requires ``type: "object"`` schemas.  ``RerankOutput``
+    is the wrapper that satisfies both requirements.
 
     Args:
         state: Current ``ProductRAGState``.  Reads ``query``,
@@ -423,9 +430,9 @@ async def llm_postprocess_node(state: ProductRAGState) -> dict:
 
     candidates_text = _format_candidates_for_rerank(candidates)
 
-    llm = ChatOpenAI(model=settings.rerank_model).with_structured_output(list[str])
-    reranked = cast(
-        list[str],
+    llm = ChatOpenAI(model=settings.rerank_model).with_structured_output(RerankOutput)
+    parsed = cast(
+        RerankOutput,
         await llm.ainvoke(
             [
                 SystemMessage(content=_build_rerank_system(summary, user_profile)),
@@ -441,6 +448,7 @@ async def llm_postprocess_node(state: ProductRAGState) -> dict:
             config={"metadata": {"correlation_id": state.get("correlation_id", "")}},
         ),
     )
+    reranked: list[str] = list(parsed.ranked_ids)
 
     retrieved: list[dict] = []
     for pid in reranked:

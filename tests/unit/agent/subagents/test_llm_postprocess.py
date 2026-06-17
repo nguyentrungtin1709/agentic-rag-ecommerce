@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import typing
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
+
+from app.agent.subagents.product_rag.schemas import RerankOutput
 
 if TYPE_CHECKING:
     from app.agent.subagents.product_rag.state import ProductRAGState
@@ -84,7 +85,9 @@ async def test_rerank_returns_reranked_payloads_in_order() -> None:
 
     with patch("app.agent.subagents.product_rag.nodes.ChatOpenAI") as mock_cls:
         mock_llm = MagicMock()
-        mock_llm.ainvoke = AsyncMock(return_value=["prod_b", "prod_a", "prod_c"])
+        mock_llm.ainvoke = AsyncMock(
+            return_value=RerankOutput(ranked_ids=["prod_b", "prod_a", "prod_c"]),
+        )
         mock_cls.return_value.with_structured_output.return_value = mock_llm
 
         result = await llm_postprocess_node(state)
@@ -107,7 +110,9 @@ async def test_rerank_caps_result_at_top_k() -> None:
 
     with patch("app.agent.subagents.product_rag.nodes.ChatOpenAI") as mock_cls:
         mock_llm = MagicMock()
-        mock_llm.ainvoke = AsyncMock(return_value=["prod_0", "prod_1", "prod_2"])
+        mock_llm.ainvoke = AsyncMock(
+            return_value=RerankOutput(ranked_ids=["prod_0", "prod_1", "prod_2"]),
+        )
         mock_cls.return_value.with_structured_output.return_value = mock_llm
 
         result = await llm_postprocess_node(state)
@@ -132,7 +137,9 @@ async def test_rerank_fills_with_candidates_when_llm_returns_unknown_ids() -> No
         mock_llm = MagicMock()
         # Only prod_a is real; prod_unknown doesn't exist; remaining slots filled
         # by walking the original candidate list in order.
-        mock_llm.ainvoke = AsyncMock(return_value=["prod_a", "prod_unknown"])
+        mock_llm.ainvoke = AsyncMock(
+            return_value=RerankOutput(ranked_ids=["prod_a", "prod_unknown"]),
+        )
         mock_cls.return_value.with_structured_output.return_value = mock_llm
 
         result = await llm_postprocess_node(state)
@@ -159,7 +166,7 @@ async def test_rerank_human_message_contains_query_and_candidates() -> None:
 
     with patch("app.agent.subagents.product_rag.nodes.ChatOpenAI") as mock_cls:
         mock_llm = MagicMock()
-        mock_llm.ainvoke = AsyncMock(return_value=["prod_a", "prod_b"])
+        mock_llm.ainvoke = AsyncMock(return_value=RerankOutput(ranked_ids=["prod_a", "prod_b"]))
         mock_cls.return_value.with_structured_output.return_value = mock_llm
 
         await llm_postprocess_node(state)
@@ -188,7 +195,7 @@ async def test_rerank_uses_rerank_model() -> None:
 
     with patch("app.agent.subagents.product_rag.nodes.ChatOpenAI") as mock_cls:
         mock_llm = MagicMock()
-        mock_llm.ainvoke = AsyncMock(return_value=["prod_a"])
+        mock_llm.ainvoke = AsyncMock(return_value=RerankOutput(ranked_ids=["prod_a"]))
         mock_cls.return_value.with_structured_output.return_value = mock_llm
 
         await llm_postprocess_node(state)
@@ -197,8 +204,14 @@ async def test_rerank_uses_rerank_model() -> None:
         assert call_kwargs["model"] == get_settings().rerank_model
 
 
-async def test_rerank_uses_structured_output_list_str() -> None:
-    """llm_postprocess_node must call with_structured_output with list[str] as the schema."""
+async def test_rerank_uses_structured_output_rerank_output() -> None:
+    """llm_postprocess_node must bind with_structured_output to RerankOutput (not raw list[str]).
+
+    Regression guard for the bug where ``with_structured_output(list[str])``
+    raised ``TypeError: list[str] is not a module, class, method, or
+    function.`` at runtime — LangChain requires a real class (Pydantic
+    model, TypedDict, or callable) as the schema argument.
+    """
     from app.agent.subagents.product_rag.nodes import llm_postprocess_node
 
     state = _make_state(
@@ -207,15 +220,30 @@ async def test_rerank_uses_structured_output_list_str() -> None:
 
     with patch("app.agent.subagents.product_rag.nodes.ChatOpenAI") as mock_cls:
         mock_llm = MagicMock()
-        mock_llm.ainvoke = AsyncMock(return_value=["prod_a"])
+        mock_llm.ainvoke = AsyncMock(return_value=RerankOutput(ranked_ids=["prod_a"]))
         mock_cls.return_value.with_structured_output.return_value = mock_llm
 
         await llm_postprocess_node(state)
 
         schema_arg = mock_cls.return_value.with_structured_output.call_args[0][0]
-        # Compare by origin + args to avoid relying on identity of generic aliases.
-        assert typing.get_origin(schema_arg) is list
-        assert typing.get_args(schema_arg) == (str,)
+        assert schema_arg is RerankOutput
+
+
+async def test_rerank_output_schema_is_object_type() -> None:
+    """RerankOutput's generated JSON schema must be type: "object".
+
+    OpenAI's structured-outputs endpoint (default for
+    ``langchain-openai>=0.3``) rejects schemas whose top-level type
+    is not ``"object"``.  A previous fix used ``RootModel[list[str]]``
+    which generated ``type: "array"`` and was rejected with HTTP
+    400.  This test pins the model shape so a future refactor that
+    re-introduces the array-only schema is caught at unit-test time.
+    """
+    schema = RerankOutput.model_json_schema()
+    assert schema["type"] == "object"
+    assert "ranked_ids" in schema["properties"]
+    assert schema["properties"]["ranked_ids"]["type"] == "array"
+    assert schema["properties"]["ranked_ids"]["items"]["type"] == "string"
 
 
 async def test_rerank_system_message_includes_base_and_context() -> None:
@@ -230,7 +258,7 @@ async def test_rerank_system_message_includes_base_and_context() -> None:
 
     with patch("app.agent.subagents.product_rag.nodes.ChatOpenAI") as mock_cls:
         mock_llm = MagicMock()
-        mock_llm.ainvoke = AsyncMock(return_value=["prod_a"])
+        mock_llm.ainvoke = AsyncMock(return_value=RerankOutput(ranked_ids=["prod_a"]))
         mock_cls.return_value.with_structured_output.return_value = mock_llm
 
         await llm_postprocess_node(state)
@@ -258,7 +286,7 @@ async def test_rerank_omits_context_sections_when_empty() -> None:
 
     with patch("app.agent.subagents.product_rag.nodes.ChatOpenAI") as mock_cls:
         mock_llm = MagicMock()
-        mock_llm.ainvoke = AsyncMock(return_value=["prod_a"])
+        mock_llm.ainvoke = AsyncMock(return_value=RerankOutput(ranked_ids=["prod_a"]))
         mock_cls.return_value.with_structured_output.return_value = mock_llm
 
         await llm_postprocess_node(state)
@@ -280,7 +308,7 @@ async def test_rerank_does_not_forward_state_messages() -> None:
 
     with patch("app.agent.subagents.product_rag.nodes.ChatOpenAI") as mock_cls:
         mock_llm = MagicMock()
-        mock_llm.ainvoke = AsyncMock(return_value=["prod_a"])
+        mock_llm.ainvoke = AsyncMock(return_value=RerankOutput(ranked_ids=["prod_a"]))
         mock_cls.return_value.with_structured_output.return_value = mock_llm
 
         await llm_postprocess_node(state)
@@ -303,7 +331,7 @@ async def test_rerank_propagates_correlation_id_in_metadata() -> None:
 
     with patch("app.agent.subagents.product_rag.nodes.ChatOpenAI") as mock_cls:
         mock_llm = MagicMock()
-        mock_llm.ainvoke = AsyncMock(return_value=["prod_a"])
+        mock_llm.ainvoke = AsyncMock(return_value=RerankOutput(ranked_ids=["prod_a"]))
         mock_cls.return_value.with_structured_output.return_value = mock_llm
 
         await llm_postprocess_node(state)
