@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         6. Qdrant collection bootstrap
         7. Valkey connection
         8. S3 bucket ensure (fail fast if missing)
-        9. OpenAI client (for Phase 13 DALL-E)
+        9. OpenAI client (for Phase 13 image generation)
 
     Shutdown order (reverse of construction):
         1. OpenAI client close
@@ -107,7 +107,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await s3.ensure_bucket()
     app.state.s3 = s3
 
-    # ── OpenAI client (5.8 NEW — for Phase 13 DALL-E) ────────────────────
+    # ── OpenAI client (5.8 NEW — for Phase 13 image generation) ─────────
     # Stored as a bare AsyncOpenAI; consumed by generate_image node
     # via OpenAIDep. Not used by LangChain ChatOpenAI nodes (see ADR).
     openai_client = AsyncOpenAI(api_key=settings.openai_api_key)

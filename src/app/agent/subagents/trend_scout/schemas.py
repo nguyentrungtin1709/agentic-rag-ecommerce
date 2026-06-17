@@ -26,10 +26,12 @@ class TrendScoutOutput(BaseModel):
             when both search tools failed and no synthesis was
             possible (graceful degradation per D11.6).
         image_prompt: Exactly one text-to-image prompt
-            (DALL-E compatible) when ``generate_image`` was
-            ``True`` and the query is design-related; ``None``
-            otherwise. The ``ImageGenerationNode`` (Phase 13)
-            reads this value to drive DALL-E.
+            (compatible with the configured image model —
+            gpt-image family by default, 16.1.0) when
+            ``generate_image`` was ``True`` and the query is
+            design-related; ``None`` otherwise. The
+            ``ImageGenerationNode`` (Phase 13) reads this value
+            to drive the model.
     """
 
     trend_summary: str | None = Field(

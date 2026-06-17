@@ -156,7 +156,7 @@ def _make_image(
         prompt=prompt,
         s3_key=f"images/{request_message_id}.png",
         s3_url=url,
-        model="dall-e-3",
+        model="gpt-image-2",
         request_message_id=request_message_id,
         created_at=datetime(2026, 6, 14, tzinfo=UTC),
     )

@@ -198,8 +198,9 @@ def get_s3_service(request: Request) -> S3Service:
 def get_openai_client(request: Request) -> AsyncOpenAI:
     """Return the ``AsyncOpenAI`` singleton from app state (Phase 5.8).
 
-    Consumed by the image-generation node (Phase 13) for DALL-E.
-    Stored as a bare ``AsyncOpenAI``; no wrapper class (see
+    Consumed by the image-generation node (Phase 13) — the gpt-image
+    family is the default model since 16.1.0.  Stored as a bare
+    ``AsyncOpenAI``; no wrapper class (see
     ``history/5_0_0_SHARED_RESOURCE_INJECTION.md`` ADR D5.7).
     """
     return request.app.state.openai

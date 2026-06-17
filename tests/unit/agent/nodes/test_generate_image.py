@@ -1,17 +1,20 @@
 """Unit tests for app.agent.nodes.generate_image.
 
-Covers Phase 13, D13.1-D13.10:
+Covers Phase 13, D13.1-D13.10 + 16.0.0 + 16.1.0:
 
 * No-op when ``generate_image`` is False.
 * No-op when ``image_prompt`` is missing.
 * Quota exceeded → ``image_failed {reason: rate_limit_exceeded}``.
-* DALL-E success → S3 upload, DB row, Valkey increment,
-  ``image_ready`` SSE, return dict.
-* DALL-E failure → ``image_failed {reason: generation_failed}``.
+* Image model success → b64 decode → S3 upload, DB row, Valkey
+  increment, ``image_ready`` SSE, return dict.
+* Image model failure → ``image_failed {reason: generation_failed}``.
+* Image model returns no ``b64_json`` → ``image_failed``.
+* Base64 decode failure → ``image_failed``.
 * S3 upload failure → same ``image_failed`` payload, no DB insert.
 * ``request_message_id`` is the id of the last HumanMessage.
 * Valkey increment failure is swallowed; the DB row is the source
   of truth and the return dict is still populated.
+* Model is read from ``settings.image_generation_model`` (16.1.0).
 """
 
 from __future__ import annotations
@@ -80,12 +83,15 @@ def _make_config(
     s3_service: Any = None,
     valkey_service: Any = None,
 ) -> RunnableConfig:
-    """Build a RunnableConfig with all four injected services.
+    """Build a RunnableConfig with all four injected services (16.1.0).
 
     The ``sse_queue`` defaults to a real ``asyncio.Queue`` so the
     tests that need emission order assertions can ``queue.join()``
     or drain the queue.  Tests that only care about the return
     shape pass an explicit ``MagicMock(spec=asyncio.Queue)``.
+
+    No ``http_client`` key is injected anymore — the gpt-image
+    family returns base64 bytes inline (16.1.0).
     """
     return cast(
         "RunnableConfig",
@@ -159,7 +165,7 @@ async def test_generate_image_is_noop_when_image_prompt_none() -> None:
 
 
 async def test_generate_image_quota_exceeded_emits_image_failed() -> None:
-    """``valkey.get_quota`` returns the daily limit → ``image_failed`` SSE, no DALL-E."""
+    """``valkey.get_quota`` returns the daily limit → ``image_failed`` SSE, no model call."""
     from datetime import date as _date
 
     from app.agent.nodes.generate_image import generate_image
@@ -176,7 +182,7 @@ async def test_generate_image_quota_exceeded_emits_image_failed() -> None:
     assert result == {}
     expected_key = f"image_quota:{_USER_ID}:{_date.today().isoformat()}"
     valkey.get_quota.assert_awaited_once_with(expected_key)
-    # No DALL-E call, no S3, no DB.
+    # No model call, no S3, no DB.
     mock_pool.assert_not_called()
 
     events = _drain(queue)
@@ -185,20 +191,20 @@ async def test_generate_image_quota_exceeded_emits_image_failed() -> None:
     assert events[0]["payload"]["reason"] == "rate_limit_exceeded"
 
 
-# ── Test 4: DALL-E success → S3 + DB + Valkey + SSE + return dict ───────────
+# ── Test 4: image model success → S3 + DB + Valkey + SSE + return dict ──────
 
 
-async def test_generate_image_dalle_success_uploads_to_s3_and_inserts_row() -> None:
-    """Full happy path: DALL-E → S3 → DB → Valkey → SSE → return dict."""
+async def test_generate_image_b64_success_uploads_to_s3_and_inserts_row() -> None:
+    """Full happy path: b64 payload → decode → S3 → DB → Valkey → SSE → return dict."""
     from app.agent.nodes.generate_image import generate_image
 
     state = _make_state()
     queue: asyncio.Queue = asyncio.Queue()
 
     openai_client = MagicMock()
-    fake_dalle_response = MagicMock()
-    fake_dalle_response.data = [MagicMock(b64_json=_FAKE_B64)]
-    openai_client.images.generate = AsyncMock(return_value=fake_dalle_response)
+    fake_response = MagicMock()
+    fake_response.data = [MagicMock(b64_json=_FAKE_B64)]
+    openai_client.images.generate = AsyncMock(return_value=fake_response)
 
     s3 = MagicMock()
     s3.build_key = MagicMock(return_value=f"images/{_USER_ID}/{_THREAD_UUID_STR}/1700000000.png")
@@ -230,15 +236,17 @@ async def test_generate_image_dalle_success_uploads_to_s3_and_inserts_row() -> N
     ):
         result = await generate_image(state, config)
 
-    # DALL-E called with the right args.
+    # Model called with the right args.  No ``response_format``
+    # argument is sent (16.0.0).  Model name comes from
+    # ``settings.image_generation_model`` (16.1.0).
     openai_client.images.generate.assert_awaited_once()
     dalle_kwargs = cast(Any, openai_client.images.generate.await_args).kwargs
     assert dalle_kwargs["prompt"] == state["image_prompt"]
-    assert dalle_kwargs["model"] == "dall-e-3"
+    assert dalle_kwargs["model"] == "gpt-image-2"
     assert dalle_kwargs["size"] == "1024x1024"
-    assert dalle_kwargs["response_format"] == "b64_json"
+    assert "response_format" not in dalle_kwargs
 
-    # S3 key built and upload happened.
+    # S3 key built and upload happened with the decoded bytes.
     s3.build_key.assert_called_once()
     s3.aupload_image.assert_awaited_once()
     upload_kwargs = s3.aupload_image.await_args.kwargs
@@ -252,7 +260,7 @@ async def test_generate_image_dalle_success_uploads_to_s3_and_inserts_row() -> N
     assert create_kwargs["user_id"] == _USER_ID
     assert create_kwargs["prompt"] == state["image_prompt"]
     assert create_kwargs["s3_url"] == _FAKE_S3_URL
-    assert create_kwargs["model"] == "dall-e-3"
+    assert create_kwargs["model"] == "gpt-image-2"
 
     # Quota increment AFTER S3+DB.
     valkey.increment_quota.assert_awaited_once()
@@ -275,10 +283,90 @@ async def test_generate_image_dalle_success_uploads_to_s3_and_inserts_row() -> N
     mock_repo_cls.assert_called_once()
 
 
-# ── Test 5: DALL-E failure → image_failed, no S3, no DB ──────────────────────
+# ── Test 4b: model name comes from settings.image_generation_model ──────────
 
 
-async def test_generate_image_dalle_failure_emits_image_failed() -> None:
+async def test_generate_image_uses_model_from_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``settings.image_generation_model`` overrides the default (16.1.0)."""
+    from app.agent.nodes.generate_image import generate_image
+
+    monkeypatch.setenv("IMAGE_GENERATION_MODEL", "gpt-image-1.5")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+
+    state = _make_state()
+    openai_client = MagicMock()
+    fake_response = MagicMock()
+    fake_response.data = [MagicMock(b64_json=_FAKE_B64)]
+    openai_client.images.generate = AsyncMock(return_value=fake_response)
+
+    image_repo = MagicMock()
+    image_repo.create = AsyncMock()
+
+    config = _make_config(
+        openai_client=openai_client,
+        s3_service=MagicMock(aupload_image=AsyncMock(return_value=_FAKE_S3_URL)),
+        valkey_service=MagicMock(get_quota=AsyncMock(return_value=0)),
+    )
+
+    with (
+        patch("app.agent.nodes.generate_image.ImageRepository", return_value=image_repo),
+        patch("app.agent.nodes.generate_image.get_asyncpg_pool", return_value=MagicMock()),
+    ):
+        await generate_image(state, config)
+
+    dalle_kwargs = cast(Any, openai_client.images.generate.await_args).kwargs
+    assert dalle_kwargs["model"] == "gpt-image-1.5"
+
+
+# ── Test 4c: model call NEVER sends response_format (16.0.0 regression guard)
+
+
+async def test_generate_image_does_not_send_response_format_parameter() -> None:
+    """Regression guard: the model call must NOT include ``response_format``.
+
+    Pinned by 16.0.0 (DALL-E 3 rejected the parameter with HTTP 400
+    ``unknown_parameter``) and re-pinned by 16.1.0 — the gpt-image
+    family ignores ``response_format`` entirely; sending it would
+    be pointless and risks the same rejection on future models.
+    """
+    from app.agent.nodes.generate_image import generate_image
+
+    state = _make_state()
+    openai_client = MagicMock()
+    fake_response = MagicMock()
+    fake_response.data = [MagicMock(b64_json=_FAKE_B64)]
+    openai_client.images.generate = AsyncMock(return_value=fake_response)
+
+    image_repo = MagicMock()
+    image_repo.create = AsyncMock()
+
+    config = _make_config(
+        openai_client=openai_client,
+        s3_service=MagicMock(aupload_image=AsyncMock(return_value=_FAKE_S3_URL)),
+        valkey_service=MagicMock(get_quota=AsyncMock(return_value=0)),
+    )
+
+    with (
+        patch("app.agent.nodes.generate_image.ImageRepository", return_value=image_repo),
+        patch("app.agent.nodes.generate_image.get_asyncpg_pool", return_value=MagicMock()),
+    ):
+        await generate_image(state, config)
+
+    dalle_kwargs = cast(Any, openai_client.images.generate.await_args).kwargs
+    assert "response_format" not in dalle_kwargs
+    # Negative assertion against the previous behaviour that
+    # motivated the fix.
+    assert dalle_kwargs.get("response_format") != "b64_json"
+
+
+# ── Test 5: image model failure → image_failed, no S3, no DB ─────────────────
+
+
+async def test_generate_image_model_failure_emits_image_failed() -> None:
     """``openai_client.images.generate`` raises → ``image_failed``."""
     from app.agent.nodes.generate_image import generate_image
 
@@ -326,6 +414,102 @@ async def test_generate_image_dalle_failure_emits_image_failed() -> None:
     assert events[0]["payload"]["reason"] == "generation_failed"
 
 
+# ── Test 5b: model returns no b64_json → image_failed, no S3, no DB ─────────
+
+
+async def test_generate_image_model_no_payload_emits_image_failed() -> None:
+    """Model response with empty ``b64_json`` → ``image_failed`` (16.1.0)."""
+    from app.agent.nodes.generate_image import generate_image
+
+    state = _make_state()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    openai_client = MagicMock()
+    fake_response = MagicMock()
+    fake_response.data = [MagicMock(b64_json=None)]
+    openai_client.images.generate = AsyncMock(return_value=fake_response)
+
+    s3 = MagicMock()
+    s3.aupload_image = AsyncMock()
+
+    valkey = MagicMock()
+    valkey.get_quota = AsyncMock(return_value=0)
+
+    image_repo = MagicMock()
+    image_repo.create = AsyncMock()
+
+    config = _make_config(
+        sse_queue=queue,
+        openai_client=openai_client,
+        s3_service=s3,
+        valkey_service=valkey,
+    )
+
+    with (
+        patch("app.agent.nodes.generate_image.ImageRepository", return_value=image_repo),
+        patch("app.agent.nodes.generate_image.get_asyncpg_pool", return_value=MagicMock()),
+    ):
+        result = await generate_image(state, config)
+
+    assert result == {}
+    s3.aupload_image.assert_not_called()
+    image_repo.create.assert_not_called()
+
+    events = _drain(queue)
+    assert len(events) == 1
+    assert events[0]["type"] == "image_failed"
+    assert events[0]["payload"]["reason"] == "generation_failed"
+
+
+# ── Test 5c: base64 decode failure → image_failed, no S3, no DB ────────────
+
+
+async def test_generate_image_b64_decode_failure_emits_image_failed() -> None:
+    """Invalid base64 in ``b64_json`` → ``image_failed`` (16.1.0)."""
+    from app.agent.nodes.generate_image import generate_image
+
+    state = _make_state()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    openai_client = MagicMock()
+    fake_response = MagicMock()
+    # ``@@@@`` is not valid base64 — ``base64.b64decode(s, validate=True)``
+    # raises ``binascii.Error`` for this input.
+    fake_response.data = [MagicMock(b64_json="@@@@not-valid-base64")]
+    openai_client.images.generate = AsyncMock(return_value=fake_response)
+
+    s3 = MagicMock()
+    s3.aupload_image = AsyncMock()
+
+    valkey = MagicMock()
+    valkey.get_quota = AsyncMock(return_value=0)
+
+    image_repo = MagicMock()
+    image_repo.create = AsyncMock()
+
+    config = _make_config(
+        sse_queue=queue,
+        openai_client=openai_client,
+        s3_service=s3,
+        valkey_service=valkey,
+    )
+
+    with (
+        patch("app.agent.nodes.generate_image.ImageRepository", return_value=image_repo),
+        patch("app.agent.nodes.generate_image.get_asyncpg_pool", return_value=MagicMock()),
+    ):
+        result = await generate_image(state, config)
+
+    assert result == {}
+    s3.aupload_image.assert_not_called()
+    image_repo.create.assert_not_called()
+
+    events = _drain(queue)
+    assert len(events) == 1
+    assert events[0]["type"] == "image_failed"
+    assert events[0]["payload"]["reason"] == "generation_failed"
+
+
 # ── Test 6: S3 upload failure → image_failed, no DB ─────────────────────────
 
 
@@ -337,9 +521,9 @@ async def test_generate_image_s3_upload_failure_emits_image_failed() -> None:
     queue: asyncio.Queue = asyncio.Queue()
 
     openai_client = MagicMock()
-    fake_dalle_response = MagicMock()
-    fake_dalle_response.data = [MagicMock(b64_json=_FAKE_B64)]
-    openai_client.images.generate = AsyncMock(return_value=fake_dalle_response)
+    fake_response = MagicMock()
+    fake_response.data = [MagicMock(b64_json=_FAKE_B64)]
+    openai_client.images.generate = AsyncMock(return_value=fake_response)
 
     s3 = MagicMock()
     s3.build_key = MagicMock(return_value="images/k.png")
@@ -395,9 +579,9 @@ async def test_generate_image_request_message_id_is_last_human_message() -> None
     queue: asyncio.Queue = asyncio.Queue()
 
     openai_client = MagicMock()
-    fake_dalle_response = MagicMock()
-    fake_dalle_response.data = [MagicMock(b64_json=_FAKE_B64)]
-    openai_client.images.generate = AsyncMock(return_value=fake_dalle_response)
+    fake_response = MagicMock()
+    fake_response.data = [MagicMock(b64_json=_FAKE_B64)]
+    openai_client.images.generate = AsyncMock(return_value=fake_response)
 
     s3 = MagicMock()
     s3.build_key = MagicMock(return_value="images/k.png")
@@ -442,9 +626,9 @@ async def test_generate_image_quota_failure_does_not_break_flow() -> None:
     queue: asyncio.Queue = asyncio.Queue()
 
     openai_client = MagicMock()
-    fake_dalle_response = MagicMock()
-    fake_dalle_response.data = [MagicMock(b64_json=_FAKE_B64)]
-    openai_client.images.generate = AsyncMock(return_value=fake_dalle_response)
+    fake_response = MagicMock()
+    fake_response.data = [MagicMock(b64_json=_FAKE_B64)]
+    openai_client.images.generate = AsyncMock(return_value=fake_response)
 
     s3 = MagicMock()
     s3.build_key = MagicMock(return_value="images/k.png")

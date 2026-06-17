@@ -50,8 +50,8 @@ class HistoryImageItem(BaseModel):
 
     Attached to the ``AIMessage`` that follows the originating human
     message.  ``url`` is a presigned S3 URL (or, in tests, a placeholder
-    ``https://...`` string); ``prompt`` is the DALL-E prompt that
-    produced it.
+    ``https://...`` string); ``prompt`` is the text-to-image prompt
+    (gpt-image family by default — see 16.1.0) that produced it.
     """
 
     url: str

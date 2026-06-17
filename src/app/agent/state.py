@@ -77,7 +77,8 @@ class AgentState(MessagesState):
         image_prompt: Text-to-image prompt produced by ``TrendScoutNode``
             (as part of ``TrendScoutOutput.image_prompt``), or ``None``
             when not applicable.  ``ImageGenerationNode`` reads this value
-            to call DALL-E; the prompt is also included in the
+            to call the configured image model (gpt-image family by
+            default — 16.1.0); the prompt is also included in the
             ``image_ready`` SSE event (FR-053).
         summary: Accumulated conversation summary produced by
             ``SummarizeNode``.  Empty string when no summarisation has

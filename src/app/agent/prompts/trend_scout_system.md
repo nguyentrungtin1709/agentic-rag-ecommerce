@@ -15,7 +15,7 @@ concise trend report. Use the available search tools to find up-to-date informat
 Return a structured `TrendScoutOutput` with:
 - `trend_summary`: 2-3 sentences covering top themes, color palettes, and relevant styles.
   Written as a concise analyst report in plain language.
-- `image_prompt`: exactly 1 descriptive text-to-image prompt (DALL-E compatible) if
+- `image_prompt`: exactly 1 descriptive text-to-image prompt (compatible with the configured image model — gpt-image family by default, see 16.1.0) if
   `generate_image` is True AND the query is design-related. Otherwise `null`.
 
 ## Content Guardrails

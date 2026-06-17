@@ -92,7 +92,7 @@ async def test_list_by_message_id_returns_models_in_ascending_order(
             "prompt": "p",
             "s3_key": "k",
             "s3_url": "https://x",
-            "model": "dall-e-3",
+            "model": "gpt-image-2",
             "request_message_id": "m1",
             "created_at": datetime(2026, 1, 1, tzinfo=UTC),
         }
@@ -188,7 +188,7 @@ async def test_list_by_message_ids_groups_rows_by_message_id(
         "prompt": "p1",
         "s3_key": "k1",
         "s3_url": "https://x/1",
-        "model": "dall-e-3",
+        "model": "gpt-image-2",
         "request_message_id": "a1",
         "created_at": datetime(2026, 1, 1, tzinfo=UTC),
     }
@@ -199,7 +199,7 @@ async def test_list_by_message_ids_groups_rows_by_message_id(
         "prompt": "p2a",
         "s3_key": "k2a",
         "s3_url": "https://x/2a",
-        "model": "dall-e-3",
+        "model": "gpt-image-2",
         "request_message_id": "a2",
         "created_at": datetime(2026, 1, 2, tzinfo=UTC),
     }
@@ -210,7 +210,7 @@ async def test_list_by_message_ids_groups_rows_by_message_id(
         "prompt": "p2b",
         "s3_key": "k2b",
         "s3_url": "https://x/2b",
-        "model": "dall-e-3",
+        "model": "gpt-image-2",
         "request_message_id": "a2",
         "created_at": datetime(2026, 1, 3, tzinfo=UTC),
     }

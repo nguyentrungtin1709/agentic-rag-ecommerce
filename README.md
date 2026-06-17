@@ -33,7 +33,7 @@ The `ProductRAGAgent` uses **LlamaIndex** to index the Saleor product catalog in
 The `TrendScoutNode` calls **Tavily** (with **DuckDuckGo** as fallback) to retrieve real-time seasonal design trends, summarizes them into a structured trend report, and generates 3–5 text-to-image prompt suggestions stored in `AgentState.trend_summary`.
 
 ### On-demand Design Image Generation
-The `ImageGenerationNode` runs as a parallel branch within the LangGraph pipeline when `generate_image: true` is set in the request and design context is available. It calls **OpenAI DALL-E**, uploads the result to **AWS S3**, and emits an `image_ready` SSE event. Per-user daily quotas are enforced via a Valkey counter.
+The `ImageGenerationNode` runs as a parallel branch within the LangGraph pipeline when `generate_image: true` is set in the request and design context is available. It calls **OpenAI gpt-image** (default `gpt-image-2`, configurable via `IMAGE_GENERATION_MODEL`), decodes the base64 payload inline, uploads the result to **AWS S3**, and emits an `image_ready` SSE event. Per-user daily quotas are enforced via a Valkey counter.
 
 ### Real-time Saleor Data Sync (Webhook)
 `POST /webhooks/saleor` receives HMAC-SHA256-validated product lifecycle events (`PRODUCT_CREATED`, `PRODUCT_UPDATED`, `PRODUCT_DELETED`) from Saleor and enqueues idempotent **Celery** tasks to upsert or delete vectors in Qdrant.
@@ -69,6 +69,7 @@ Responses are streamed via **Server-Sent Events** using 7 typed events:
 | Async Tasks | Celery + RabbitMQ |
 | Image Storage | AWS S3 |
 | Web Search | Tavily (primary), DuckDuckGo (fallback) |
+| Sparse Vector | FastEmbed BM25 (`Qdrant/bm25` from Hugging Face Hub) |
 | Observability | LangSmith + OpenInference (OTel) + Prometheus + Grafana + structlog + Loki |
 | E-Commerce System | Saleor (open-source, via GraphQL API + HMAC webhooks) |
 | Authentication | Saleor JWT (RS256, verified via cached JWKS) |
@@ -107,7 +108,7 @@ flowchart TD
     RAG["ProductRAGAgent\n(sub-graph or ReAct)\nQuery rewrite to English\nHybrid search: dense + sparse BM25\n+ metadata filter in Qdrant\nStores: retrieved_products"]
     Trend["TrendScoutNode\n(ReAct + Tavily tool)\nTavily search (DuckDuckGo fallback)\nSummarize trends + text-to-image prompts\nStores: trend_summary"]
     ResGen["ResponseGeneratorNode\n(plain function + streaming)\nSynthesizes: user_profile + retrieved_products\n+ trend_summary via RESPONSE_MODEL\nSSE: token / products / done / error"]
-    ImgGen["ImageGenerationNode\n(parallel branch, inline — NOT Celery)\nDALL-E call + S3 upload\nValkey quota check\nInsert generated_images with request_message_id\nSSE: image_ready | image_failed"]
+    ImgGen["ImageGenerationNode\n(parallel branch, inline — NOT Celery)\nOpenAI gpt-image call (b64_json)\n+ S3 upload\nValkey quota check\nInsert generated_images with request_message_id\nSSE: image_ready | image_failed"]
     Checkpointer["AsyncPostgresSaver\n(auto-checkpoint after every node)"]
     END([END])
 

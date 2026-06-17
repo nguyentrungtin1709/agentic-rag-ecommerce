@@ -1,4 +1,4 @@
-"""generate_image node — DALL-E image generation with S3 + quota + SSE (Phase 13).
+"""generate_image node — OpenAI image generation with S3 + quota + SSE (Phase 13).
 
 Runs as a parallel branch from the orchestrator when the user opts
 into image generation for a turn (FR-040 - FR-053).  The node
@@ -8,10 +8,11 @@ assembles the full chain in one call:
    presence (D13.1, D13.2).
 2. Daily quota check via Valkey (D13.3) — fails fast when the
    user has already hit ``settings.image_daily_limit`` for the day.
-3. DALL-E call via the injected ``AsyncOpenAI`` client with
-   ``response_format="b64_json"`` (D13.4).  Decoding the base64
-   payload avoids a second HTTP call to fetch the public URL
-   (which would be valid for ~1h only).
+3. OpenAI image call via the injected ``AsyncOpenAI`` client
+   (D13.4).  Model is read from ``settings.image_generation_model``
+   — the gpt-image family always returns a base64 payload
+   (``b64_json``) so the bytes are decoded inline.  No URL
+   download, no ``response_format`` parameter (16.0.0 + 16.1.0).
 4. S3 upload via the injected ``S3Service`` (D13.5) — content type
    ``image/png``.
 5. DB row insert via ``ImageRepository.create`` (D13.6) — the
@@ -42,7 +43,9 @@ Design choices:
   (``sse_queue``, ``openai_client``, ``s3_service``,
   ``valkey_service``) per DI.X2.  When the chat handler runs
   production requests it threads in the ``app.state`` singletons;
-  tests inject mocks directly.
+  tests inject mocks directly.  No ``http_client`` is needed
+  anymore — the gpt-image model returns base64 bytes inline
+  (16.1.0).
 """
 
 from __future__ import annotations
@@ -68,9 +71,8 @@ from app.schemas.chat import ImageFailedPayload, ImageReadyPayload
 logger = structlog.get_logger(__name__)
 
 
-_DALLE_MODEL = "dall-e-3"
-_DALLE_SIZE = "1024x1024"
-_DALLE_N = 1
+_IMAGE_SIZE = "1024x1024"
+_IMAGE_N = 1
 _IMAGE_CONTENT_TYPE = "image/png"
 _QUOTA_TTL_SECONDS = 86400
 
@@ -102,14 +104,17 @@ def _build_quota_key(user_id: str) -> str:
     return f"image_quota:{user_id}:{date.today().isoformat()}"
 
 
-def _decode_dalle_b64(payload: str) -> bytes:
-    """Decode the ``b64_json`` DALL-E payload to raw PNG bytes.
+def _decode_b64_payload(b64_text: str) -> bytes:
+    """Decode the base64 payload returned by the gpt-image model.
 
-    Centralised so a single try/except covers all decode failures
-    in one place and the error message stays consistent in
-    ``generate_image``'s logs.
+    The OpenAI gpt-image family (``gpt-image-1``, ``gpt-image-1-mini``,
+    ``gpt-image-1.5``, ``gpt-image-2``) always returns image bytes
+    in the ``b64_json`` field — there is no signed URL variant
+    (16.1.0).  The string is base64 of a PNG payload; we decode
+    with ``validate=True`` so a corrupted payload raises
+    ``binascii.Error`` instead of silently truncating.
     """
-    return base64.b64decode(payload)
+    return base64.b64decode(b64_text, validate=True)
 
 
 async def _emit_image_failed(
@@ -142,10 +147,11 @@ async def generate_image(
     3. Check the Valkey daily quota (D13.3) — when the user has
        already hit the limit, emit ``image_failed
        {reason: "rate_limit_exceeded"}`` and return ``{}`` without
-       touching DALL-E.
-    4. Call DALL-E with ``response_format="b64_json"`` (D13.4).
-       Any exception → ``image_failed {reason: "generation_failed"}``
-       and return ``{}``.
+       touching the model.
+    4. Call the configured model (D13.4) — the gpt-image family
+       returns base64 bytes; we decode them inline.  Any
+       exception during the call → ``image_failed {reason:
+       "generation_failed"}`` and return ``{}``.
     5. Upload the decoded bytes to S3 (D13.5).  Same error path.
     6. Insert a ``generated_images`` row linked to the last
        HumanMessage id (D13.6).  Same error path — S3 orphans are
@@ -177,6 +183,7 @@ async def generate_image(
     )
 
     settings = get_settings()
+    image_model = settings.image_generation_model
     thread_id = state["thread_id"]
 
     configurable = (config.get("configurable", {}) if config else {}) or {}
@@ -230,21 +237,25 @@ async def generate_image(
             )
             return {}
 
-    # Step 4: D13.4 — DALL-E call.  ``response_format="b64_json"``
-    # so we get the bytes inline and skip a second HTTP call to
-    # fetch the public URL (which is valid for ~1h anyway).
+    # Step 4: D13.4 — image model call.  The gpt-image family
+    # always returns base64 payloads in ``b64_json``; we do NOT
+    # pass ``response_format`` because the gpt-image endpoints
+    # ignore it (16.0.0).  ``dall-e-3`` was abandoned in 16.1.0
+    # because the API key shipped with this project no longer
+    # has access to it — ``settings.image_generation_model`` is
+    # the single source of truth.
     try:
         response = await openai_client.images.generate(  # type: ignore[union-attr]
             prompt=image_prompt,
-            n=_DALLE_N,
-            size=_DALLE_SIZE,
-            model=_DALLE_MODEL,
-            response_format="b64_json",
+            n=_IMAGE_N,
+            size=_IMAGE_SIZE,
+            model=image_model,
         )
     except Exception as exc:  # noqa: BLE001 — defensive
         logger.warning(
-            "generate_image_dalle_call_failed",
+            "generate_image_model_call_failed",
             thread_id=thread_id,
+            model=image_model,
             error=str(exc),
             error_type=type(exc).__name__,
         )
@@ -252,14 +263,45 @@ async def generate_image(
             sse_queue,
             reason="generation_failed",
             thread_id=thread_id,
-            context={"stage": "dalle"},
+            context={"stage": "model_call"},
         )
         return {}
 
-    # The DALL-E SDK returns a list of images.  We requested n=1 so
-    # the first entry is always present.
+    # Step 4b: decode the base64 payload.  The gpt-image family
+    # always returns ``b64_json`` (16.1.0); an empty payload is
+    # treated as a model-side failure.
     b64_payload = response.data[0].b64_json
-    image_bytes = _decode_dalle_b64(cast(str, b64_payload))
+    if not b64_payload:
+        logger.warning(
+            "generate_image_model_no_payload",
+            thread_id=thread_id,
+            model=image_model,
+        )
+        await _emit_image_failed(
+            sse_queue,
+            reason="generation_failed",
+            thread_id=thread_id,
+            context={"stage": "model_no_payload"},
+        )
+        return {}
+
+    try:
+        image_bytes = _decode_b64_payload(cast(str, b64_payload))
+    except Exception as exc:  # noqa: BLE001 — defensive
+        logger.warning(
+            "generate_image_b64_decode_failed",
+            thread_id=thread_id,
+            model=image_model,
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        await _emit_image_failed(
+            sse_queue,
+            reason="generation_failed",
+            thread_id=thread_id,
+            context={"stage": "b64_decode"},
+        )
+        return {}
 
     # Step 5: D13.5 — S3 upload.
     thread_uuid = uuid.UUID(thread_id) if isinstance(thread_id, str) else thread_id
@@ -305,7 +347,7 @@ async def generate_image(
             prompt=image_prompt,
             s3_key=s3_key,
             s3_url=s3_url,
-            model=_DALLE_MODEL,
+            model=image_model,
             request_message_id=last_human_id,
         )
     except Exception as exc:  # noqa: BLE001 — defensive
@@ -348,6 +390,7 @@ async def generate_image(
     logger.info(
         "generate_image_completed",
         thread_id=thread_id,
+        model=image_model,
         s3_key=s3_key,
         request_message_id=last_human_id,
     )

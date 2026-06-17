@@ -104,6 +104,17 @@ class Settings(BaseSettings):
     max_agent_steps: int = Field(default=10)
     agent_fallback_threshold: int = Field(default=2)
     image_daily_limit: int = Field(default=10)
+    image_generation_model: str = Field(
+        default="gpt-image-2",
+        description=(
+            "OpenAI image model used by the ``generate_image`` node "
+            "(16.1.0).  The gpt-image family always returns base64 "
+            "payloads (``b64_json``) — no signed URL, no "
+            "``response_format`` parameter.  ``dall-e-3`` / "
+            "``dall-e-2`` are no longer supported on the API key "
+            "shipped with this project (verified 16.1.0)."
+        ),
+    )
     chat_run_timeout_seconds: int = Field(
         default=120,
         ge=10,

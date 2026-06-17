@@ -45,7 +45,7 @@ class ImageRepository:
             prompt: The prompt used to generate the image.
             s3_key: S3 object key (path within the bucket).
             s3_url: Public S3 URL of the image.
-            model: Model identifier (e.g. ``"dall-e-3"``).
+            model: Model identifier (e.g. ``"gpt-image-2"``).
             request_message_id: ``HumanMessage.id`` that triggered
                 generation; links the image to its turn in thread history
                 (FR-020, FR-051).  ``None`` if unavailable.

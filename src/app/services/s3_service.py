@@ -1,7 +1,8 @@
 """S3 service — upload generated images to AWS S3.
 
-Used by the Celery image-generation task (Phase 13) and the chat SSE
-endpoint (Phase 14) to publish DALL-E output as a public HTTPS URL.
+Used by the image-generation node (Phase 13) to publish the
+configured image model output (gpt-image family by default — see
+16.1.0) as a public HTTPS URL.
 
 boto3's S3 client is thread-safe and can be shared across Celery tasks
 and FastAPI handlers in the same process.  All async helpers wrap the

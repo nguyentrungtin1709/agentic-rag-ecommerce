@@ -34,8 +34,10 @@ class ChatRequest(BaseModel):
     generate_image: bool = Field(
         default=False,
         description=(
-            "When True the agent attempts inline DALL-E generation "
-            "if design context is available (FR-047)."
+            "When True the agent attempts inline image generation "
+            "if design context is available (FR-047).  The model "
+            "used is ``settings.image_generation_model`` "
+            "(default ``gpt-image-2``, 16.1.0)."
         ),
     )
 
@@ -99,10 +101,12 @@ class ImageReadyPayload(BaseModel):
     """Payload of the ``image_ready`` SSE event (FR-053).
 
     Emitted by the ``generate_image`` node (Phase 13, D13.7) once
-    the DALL-E image is uploaded to S3 and the ``generated_images``
-    row is committed.  Carries the public S3 URL and the prompt
-    that was used to produce the image (for tooltips / re-roll
-    affordances in the UI).
+    the generated image is uploaded to S3 and the
+    ``generated_images`` row is committed.  Carries the public S3
+    URL and the prompt that was used to produce the image (for
+    tooltips / re-roll affordances in the UI).  The model is
+    ``settings.image_generation_model`` (default ``gpt-image-2``,
+    16.1.0).
     """
 
     url: str
@@ -119,8 +123,8 @@ class ImageFailedPayload(BaseModel):
     Attributes:
         reason: Short machine-readable code, one of:
 
-            - ``"generation_failed"`` — DALL-E call or S3 upload
-              raised an exception (D13.9).
+            - ``"generation_failed"`` — model call, base64
+              decode, or S3 upload raised an exception (D13.9).
             - ``"rate_limit_exceeded"`` — Valkey daily quota
               exhausted; no LLM call is made (D13.4).
     """

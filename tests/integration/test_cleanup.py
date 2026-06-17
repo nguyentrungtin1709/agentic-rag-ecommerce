@@ -196,7 +196,7 @@ async def _insert_image(
             """
             INSERT INTO generated_images
                 (id, thread_id, user_id, prompt, s3_key, s3_url, model)
-            VALUES ($1, $2, $3, 'test', $4, 'https://example.com/x.png', 'dall-e-3')
+            VALUES ($1, $2, $3, 'test', $4, 'https://example.com/x.png', 'gpt-image-2')
             """,
             image_id,
             thread_id,

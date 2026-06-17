@@ -142,3 +142,33 @@ def test_d11_12_contract_duckduckgo_search_is_plain_function_not_tool() -> None:
         "fallback as a private module-level function."
     )
     assert callable(tools.duckduckgo_search)
+
+
+# ── 16.0.0 — ddgs dependency fix regression guard ────────────────────────────
+
+
+def test_ddg_client_initialised_after_ddgs_dependency_fix() -> None:
+    """``tools._ddg`` is NOT ``None`` once the ``ddgs`` package is installed.
+
+    The historical bug: ``pyproject.toml`` pinned
+    ``duckduckgo-search==8.1.1`` while
+    ``langchain_community==0.4.2`` requires ``ddgs``.  At module
+    load time ``DuckDuckGoSearchRun.__init__`` raised inside its
+    Pydantic model_validator and the module caught the exception,
+    setting ``_ddg = None`` and logging
+    ``duckduckgo_client_init_failed``.
+
+    16.0.0 swaps the pin to ``ddgs>=9.0.0,<10.0.0``.  This test
+    pins the resolved contract: after import, ``_ddg`` must be
+    a real ``DuckDuckGoSearchRun`` instance, NOT ``None``.
+    """
+    from langchain_community.tools import DuckDuckGoSearchRun
+
+    from app.agent.subagents.trend_scout import tools
+
+    assert tools._ddg is not None, (
+        "tools._ddg is None — ddgs package is missing or "
+        "DuckDuckGoSearchRun.__init__ raised; the pyproject.toml "
+        "pin must be the ddgs package, not duckduckgo-search."
+    )
+    assert isinstance(tools._ddg, DuckDuckGoSearchRun)

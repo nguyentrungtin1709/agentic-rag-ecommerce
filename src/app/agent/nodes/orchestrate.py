@@ -16,8 +16,9 @@ single turn.  ``state["messages"]`` is managed by LangGraph's
 ``add_messages`` reducer, which APPENDS rather than replaces — returning
 a ``messages`` key from this node would accumulate duplicate context
 notes on every loop iteration and pollute the conversation history.
-Context hints about ``retrieved_products`` and ``trend_summary`` are
-therefore built as LOCAL variables and passed only to the LLM as input.
+Context hints about ``retrieved_products``, ``trend_summary``,
+``image_prompt``, and the ``generate_image`` flag are therefore built
+as LOCAL variables and passed only to the LLM as input.
 
 Related FRs: FR-058 (intent classification), FR-059 (fallback path),
 FR-088 (prompt-injection safety on user content), NFR-021 (correlation
@@ -124,8 +125,10 @@ async def orchestrate(
     2. Build an LLM with the ``update_intent`` tool bound.
     3. Assemble the message list: system prompt + ``state["messages"]``
        + (optional) local context notes about already-retrieved
-       products and trend data.  The notes are LOCAL — they are not
-       returned as part of the state update.
+       products, trend data, an image prompt prepared by TrendScout,
+       and the ``generate_image`` client opt-in flag (positive or
+       negative).  The notes are LOCAL — they are not returned as
+       part of the state update.
     4. Invoke the LLM and extract the chosen intent from its tool call.
     5. Return ``{"intent": <chosen value>}`` only.
 
@@ -172,6 +175,8 @@ async def orchestrate(
     ]
     retrieved = state.get("retrieved_products") or []
     trend = state.get("trend_summary")
+    image_prompt = state.get("image_prompt")
+    generate_image = bool(state.get("generate_image"))
 
     if retrieved:
         # Compact format: one line per product with name + category +
@@ -197,6 +202,56 @@ async def orchestrate(
             )
         )
 
+    if image_prompt:
+        # Mirror the trend hint: when TrendScout has produced an
+        # image_prompt, the orchestrator should know the trend branch
+        # has produced the artifact the image-generation node will
+        # consume. Include the full prompt text so the LLM can
+        # recognise follow-up questions that reference it.
+        messages.append(
+            HumanMessage(
+                content=(f"[Context — image prompt is already prepared this turn]\n{image_prompt}")
+            )
+        )
+
+    if generate_image:
+        # Positive signal: the client opted in to image generation for
+        # this turn. The image-generation node will execute only when
+        # an image_prompt is also set, so the orchestrator should
+        # dispatch need_trend_info when the request involves a design,
+        # artwork, or image — and respect the products-before-trend
+        # dispatch order when both are needed.
+        messages.append(
+            HumanMessage(
+                content=(
+                    "[Context — image generation is enabled for this turn. "
+                    "If the user's request involves a design, artwork, or image to be "
+                    "created, dispatch need_trend_info so TrendScout can produce an "
+                    "image_prompt. The dispatch order rule still applies: products "
+                    "before trend when both are needed.]"
+                )
+            )
+        )
+    else:
+        # Negative signal: the client did not opt in to image generation.
+        # The image-generation node will be a no-op regardless of any
+        # image_prompt gathered, so dispatching need_trend_info solely
+        # to produce an image_prompt is wasteful. Trend research is
+        # still allowed for trends / style / design ideas (cases where
+        # no image is required).
+        messages.append(
+            HumanMessage(
+                content=(
+                    "[Context — image generation is NOT enabled for this turn. "
+                    "The user did not request image generation in this turn, so the "
+                    "image-generation node will be a no-op regardless of any trend or "
+                    "image_prompt gathered. Do not dispatch need_trend_info solely to "
+                    "produce an image_prompt. Trend research may still be dispatched "
+                    "when the query asks for trends, style reports, or design ideas.]"
+                )
+            )
+        )
+
     # Step 4 — invoke the LLM. Forward correlation_id for trace linkage.
     response = await llm.ainvoke(
         messages,
@@ -213,6 +268,8 @@ async def orchestrate(
         remaining_steps=remaining,
         retrieved_products_count=len(retrieved),
         has_trend_summary=trend is not None,
+        has_image_prompt=image_prompt is not None,
+        generate_image=generate_image,
     )
 
     return {"intent": intent}
