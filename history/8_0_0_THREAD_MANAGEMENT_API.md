@@ -144,7 +144,7 @@ batch method, a `request.state.current_user` shim in
     `GraphStateDep`.
   - `tests/unit/repositories/test_image_repo.py` — 4 new cases
     for `list_by_message_ids`.
-  - `docs/05-IMPLEMENTATION-PLAN.md` — Phase 8 row `[PENDING]`
+  - `docs/analysis/05-IMPLEMENTATION-PLAN.md` — Phase 8 row `[PENDING]`
     to `[DONE]`.
 - **No breaking API changes** to the existing thread contract — the
   schemas are additive, the DELETE 410 is the same as the stub (the
@@ -179,7 +179,7 @@ batch method, a `request.state.current_user` shim in
   FR-020.
 - NFR-024 (log with `thread_id`, `user_id`, `event_type` for
   thread lifecycle entries).
-- `docs/05-IMPLEMENTATION-PLAN.md` lines covering Phase 8.
+- `docs/analysis/05-IMPLEMENTATION-PLAN.md` lines covering Phase 8.
 - `docs/analysis/01-USE-CASE-ANALYSIS.md` UC-001 / UC-002 / UC-003
   (CRUD threads) and UC-004 (paginated history).
 - LangGraph public API:

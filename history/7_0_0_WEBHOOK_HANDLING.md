@@ -125,7 +125,7 @@ classifier that was duplicated in `process_batch` into a shared
     `app.utils.transient`; remove local definition.
   - `tests/unit/tasks/test_process_batch.py` — update the 8
     `_is_transient_*` test cases to import from the new location.
-  - `docs/05-IMPLEMENTATION-PLAN.md` — Phase 7 row from `[PENDING]`
+  - `docs/analysis/05-IMPLEMENTATION-PLAN.md` — Phase 7 row from `[PENDING]`
     to `[DONE]`.
 - **No breaking API changes** to the webhook contract — Saleor
   continues to send `{event, data.object}` and continues to receive a
@@ -159,7 +159,7 @@ End-to-end smoke test (planned, see `temp/phase-7-webhook-handling.md`):
 - FR-076, FR-077, FR-078, FR-079, FR-080, FR-086, FR-094, FR-100.
 - NFR-003 (webhook latency < 200 ms), NFR-013 (idempotency),
   NFR-024 (log with `product_id`, `event_type`, duration).
-- `docs/05-IMPLEMENTATION-PLAN.md` lines 410-443 (Phase 7 description).
+- `docs/analysis/05-IMPLEMENTATION-PLAN.md` lines 410-443 (Phase 7 description).
 - `docs/analysis/01-USE-CASE-ANALYSIS.md` UC-009 / UC-010 / UC-011
   (CREATE / UPDATE / DELETE flows), UC-S04 (HMAC).
 - `docs/analysis/03-PROJECT-SCAFFOLD.md` lines 171, 180, 213
@@ -262,7 +262,7 @@ secondary check (the endpoint already filters).
 - `tests/integration/test_webhook_e2e.py` — `_build_payload()`
   helper emits the unwrapped body. New `_post_webhook()` helper
   adds the `Saleor-Event` header.
-- `docs/SALEOR-APP-WEBHOOK-SETUP.md` — Step 3 subscription query
+- `docs/analysis/00-SALEOR-APP-WEBHOOK-SETUP.md` — Step 3 subscription query
   example retains the `event { ... }` root; a new note explains
   where the event type lives (header, not body).
 - `scripts/setup_saleor_webhook.py` — the default subscription
@@ -353,7 +353,7 @@ could never read.
    also requested in the response so a future caller can
    verify Saleor stored the value we asked for. The main
    function passes the generated secret to the call.
-- `docs/SALEOR-APP-WEBHOOK-SETUP.md` — note added in Step 3
+- `docs/analysis/00-SALEOR-APP-WEBHOOK-SETUP.md` — note added in Step 3
    explaining the wire case is lowercase and the endpoint
    upper-cases at the boundary.
 
@@ -375,7 +375,7 @@ flowed through to Qdrant correctly, but every real
 
 ### Root cause
 The production subscription in
-[`docs/SALEOR-APP-WEBHOOK-SETUP.md` Step 3] selects only
+[`docs/analysis/00-SALEOR-APP-WEBHOOK-SETUP.md` Step 3] selects only
 `product { id }` for the delete event:
 
 ```graphql

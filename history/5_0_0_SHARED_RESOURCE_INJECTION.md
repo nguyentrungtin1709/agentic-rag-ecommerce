@@ -83,7 +83,7 @@ without further refactoring.
 - `tests/integration/test_rate_limit.py` — NEW
 - `tests/integration/test_thread_list_cache.py` — NEW
 - `TEMP.md` — full Phase 5 implementation plan with checklist
-- `docs/05-IMPLEMENTATION-PLAN.md` — Phase 5 section updated to
+- `docs/analysis/05-IMPLEMENTATION-PLAN.md` — Phase 5 section updated to
   reflect Path A scope
 
 No breaking changes. All new symbols are additive.

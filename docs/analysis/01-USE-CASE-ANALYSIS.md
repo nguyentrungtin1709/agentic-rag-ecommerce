@@ -15,7 +15,7 @@
 > state shape, and the orchestrator's six intent values see
 > [docs/analysis/04-MULTI-AGENT-ARCHITECTURE-DESIGN.md](04-MULTI-AGENT-ARCHITECTURE-DESIGN.md).
 > For phase status, audit, and test plans see
-> [docs/05-IMPLEMENTATION-PLAN.md](../05-IMPLEMENTATION-PLAN.md).
+> [docs/analysis/05-IMPLEMENTATION-PLAN.md](05-IMPLEMENTATION-PLAN.md).
 
 ---
 
@@ -849,6 +849,6 @@ handlers) refer to the design and implementation ground truth:
     vector names (`text-dense` / `text-sparse`), and the four
     `QDRANT_*_TOP_K` env vars.
 - **Master plan** —
-  [docs/05-IMPLEMENTATION-PLAN.md](../05-IMPLEMENTATION-PLAN.md)
+  [docs/analysis/05-IMPLEMENTATION-PLAN.md](05-IMPLEMENTATION-PLAN.md)
   — phase status (Phases 1–4 DONE; 5–14 PENDING), audit notes, test
   plans, Definition of Done.

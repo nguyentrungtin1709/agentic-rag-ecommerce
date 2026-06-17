@@ -136,7 +136,7 @@ implemented in Phase 7, the API handler MUST inject
 `request.app.state.qdrant.client` into
 `config["configurable"]["qdrant_aclient"]`. This switches to Path A
 and eliminates the ~50ms per-call TCP handshake. See
-`docs/05-IMPLEMENTATION-PLAN.md` Phase 7 — "Shared resources injection
+`docs/analysis/05-IMPLEMENTATION-PLAN.md` Phase 7 — "Shared resources injection
 into graph config" task #5.
 
 ### 5. Vector name migration: drop-and-recreate
@@ -180,7 +180,7 @@ thread-level state.
 - **Phase 7 dependency** — The chat endpoint MUST inject the shared
   `AsyncQdrantClient` via `config["configurable"]["qdrant_aclient"]` to
   activate Path A. This is documented in
-  `docs/05-IMPLEMENTATION-PLAN.md` Phase 7 task #5 and
+  `docs/analysis/05-IMPLEMENTATION-PLAN.md` Phase 7 task #5 and
   `TEMP.md` Section 10.3.
 
 ## Cross-References
@@ -189,4 +189,4 @@ thread-level state.
 - **Architecture source of truth**:
   `docs/analysis/04-MULTI-AGENT-ARCHITECTURE-DESIGN.md` Section 2.3
 - **Implementation plan (master)**:
-  `docs/05-IMPLEMENTATION-PLAN.md` Phase 4 + Phase 7 task #5
+  `docs/analysis/05-IMPLEMENTATION-PLAN.md` Phase 4 + Phase 7 task #5

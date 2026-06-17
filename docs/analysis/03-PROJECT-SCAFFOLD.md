@@ -8,7 +8,7 @@
 > This is a **reference document** describing the project scaffold (directory
 > structure, dependencies, Docker Compose, Alembic, pre-commit hooks) that the
 > application is built on. It is **not** a phase plan. For phase status and
-> remaining work, see [docs/05-IMPLEMENTATION-PLAN.md](../05-IMPLEMENTATION-PLAN.md).
+> remaining work, see [docs/analysis/05-IMPLEMENTATION-PLAN.md](05-IMPLEMENTATION-PLAN.md).
 >
 > For the agent architecture and node designs, see
 > [docs/analysis/04-MULTI-AGENT-ARCHITECTURE-DESIGN.md](04-MULTI-AGENT-ARCHITECTURE-DESIGN.md).
@@ -38,7 +38,7 @@ The system boots, passes `/health` and `/ready`, connects to all 11 services,
 and runs a compiled LangGraph graph with the full 8-node topology. Pipeline
 nodes (profiler, summarize, orchestrate, product_rag) are real; the rest
 (synthesize, generate_title, generate_image, trend_scout) are stubs awaiting
-the phases in [docs/05-IMPLEMENTATION-PLAN.md](../05-IMPLEMENTATION-PLAN.md).
+the phases in [docs/analysis/05-IMPLEMENTATION-PLAN.md](05-IMPLEMENTATION-PLAN.md).
 
 ---
 
@@ -1467,7 +1467,7 @@ sections in this document and against the live source in `src/app/`.
 ## 14. Out of Scope for the Scaffold
 
 The scaffold is the foundation. Everything below belongs to a later
-phase in [docs/05-IMPLEMENTATION-PLAN.md](../05-IMPLEMENTATION-PLAN.md)
+phase in [docs/analysis/05-IMPLEMENTATION-PLAN.md](05-IMPLEMENTATION-PLAN.md)
 and is documented there:
 
 - RAG indexing pipeline (Phase 5)

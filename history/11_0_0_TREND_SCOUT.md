@@ -160,7 +160,7 @@ The TrendScout subagent uses the orchestrator model
 (`gpt-5.4-mini` by default per the project naming convention).
 Confirmed by:
 
-- `docs/05-IMPLEMENTATION-PLAN.md:754` —
+- `docs/analysis/05-IMPLEMENTATION-PLAN.md:754` —
   `create_react_agent(model=ChatOpenAI(settings.orchestrator_model), ...)`
 - `docs/analysis/04-MULTI-AGENT-ARCHITECTURE-DESIGN.md:326` —
   `model=settings.orchestrator_model`
@@ -199,7 +199,7 @@ The `Settings.orchestrator_model` field default was
 - `.env` and `.env.example` (`ORCHESTRATOR_MODEL=gpt-5.4-mini`)
 - `docs/analysis/04-MULTI-AGENT-ARCHITECTURE-DESIGN.md` §6
   (lists `gpt-5.4-mini` for the orchestrator tier)
-- `docs/05-IMPLEMENTATION-PLAN.md` §11.3 (TrendScout uses
+- `docs/analysis/05-IMPLEMENTATION-PLAN.md` §11.3 (TrendScout uses
   `orchestrator_model` per the project's model hierarchy)
 
 The default is updated to `"gpt-5.4-mini"`. This is a

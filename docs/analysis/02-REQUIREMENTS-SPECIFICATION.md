@@ -12,7 +12,7 @@
 > designs, state shape, and the orchestrator's six intent values see
 > [docs/analysis/04-MULTI-AGENT-ARCHITECTURE-DESIGN.md](04-MULTI-AGENT-ARCHITECTURE-DESIGN.md).
 > For phase status, audit, and test plans see
-> [docs/05-IMPLEMENTATION-PLAN.md](../05-IMPLEMENTATION-PLAN.md).
+> [docs/analysis/05-IMPLEMENTATION-PLAN.md](05-IMPLEMENTATION-PLAN.md).
 
 ---
 
