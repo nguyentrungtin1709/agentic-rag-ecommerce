@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(* --version)",
+      "Bash(* --help *)",
+      "Bash(uv sync)",
+      "Bash(uv run *)",
+      "Bash(pytest *)",
+      "Bash(ruff check *)",
+      "Bash(ruff format *)",
+      "Bash(pyright *)",
+      "Bash(pre-commit run *)",
+      "Bash(alembic *)",
+      "Bash(git status)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git add *)",
+      "Bash(git branch *)",
+      "Bash(git checkout *)",
+      "Bash(git stash *)",
+      "Bash(git fetch *)",
+      "Bash(git pull *)",
+      "Bash(docker-compose *)",
+      "Bash(docker ps *)",
+      "Bash(docker logs *)",
+      "Bash(pip-audit *)",
+      "Bash(safety *)"
+    ],
+    "deny": [
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git push --force *)",
+      "Bash(git reset --hard *)",
+      "Bash(git rebase *)",
+      "Bash(rm -rf *)",
+      "Bash(docker rm *)",
+      "Bash(docker rmi *)",
+      "Bash(alembic downgrade *)",
+      "Bash(drop *)",
+      "Bash(truncate *)"
+    ]
+  }
+}

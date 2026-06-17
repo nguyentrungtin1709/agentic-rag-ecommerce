@@ -7,6 +7,7 @@ from ``app.db.session.get_asyncpg_pool()``.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 import asyncpg
 import structlog
@@ -135,6 +136,68 @@ class ThreadRepository:
                 )
         return [Thread(**dict(row)) for row in rows]
 
+    async def list_all(
+        self,
+        limit: int = 20,
+        before: uuid.UUID | None = None,
+    ) -> list[Thread]:
+        """Return threads across all users, newest first (cursor-based).
+
+        Admin-only counterpart of :meth:`list_by_user` for the
+        ``GET /api/v1/admin/threads`` endpoint (FR-104, Phase 9).
+        No ``user_id`` predicate — admin operators see every thread.
+
+        Note:
+            The cursor is **not** ownership-checked (admin context).
+            An operator may pass a thread ID belonging to any user; the
+            cursor resolves against the global rowset and either returns
+            the next page or an empty list if the ID is unknown.
+
+        Args:
+            limit: Maximum rows to return (default 20).
+            before: Cursor — return threads older than the thread with
+                this ID.  Pass ``None`` for the first page.
+
+        Returns:
+            List of ``Thread`` domain models in newest-first order.
+        """
+        async with self._pool.acquire() as conn:
+            if before is None:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, user_id, title, status, title_generated,
+                           title_generation_attempts, created_at, updated_at,
+                           last_activity_at
+                    FROM threads
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
+            else:
+                cursor_row = await conn.fetchrow(
+                    "SELECT updated_at FROM threads WHERE id = $1",
+                    before,
+                )
+                if cursor_row is None:
+                    return []
+                rows = await conn.fetch(
+                    """
+                    SELECT id, user_id, title, status, title_generated,
+                           title_generation_attempts, created_at, updated_at,
+                           last_activity_at
+                    FROM threads
+                    WHERE (updated_at < $1
+                           OR (updated_at = $1 AND id::text < $2::text))
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT $3
+                    """,
+                    cursor_row["updated_at"],
+                    str(before),
+                    limit,
+                )
+        return [Thread(**dict(row)) for row in rows]
+
     async def set_status(self, thread_id: uuid.UUID, status: str) -> None:
         """Update the lifecycle status of a thread.
 
@@ -156,6 +219,52 @@ class ThreadRepository:
                 thread_id,
             )
         logger.debug("Thread status updated", thread_id=str(thread_id), status=status)
+
+    async def set_status_if_idle(
+        self,
+        thread_id: uuid.UUID,
+        user_id: str,
+        new_status: str,
+    ) -> bool:
+        """Atomically transition a thread from ``'idle'`` to ``new_status``.
+
+        Single-statement UPDATE with a WHERE clause on the current
+        status guarantees the flip is race-free under concurrent
+        requests for the same thread (FR-014, D14.3).  Used by the
+        chat endpoint to claim a thread for a new run.
+
+        Args:
+            thread_id: UUID of the thread.
+            user_id: Owner check (defence-in-depth).
+            new_status: The target status, e.g. ``'busy'``.
+
+        Returns:
+            ``True`` if exactly one row was updated (i.e. the
+            thread was idle and is now ``new_status``).
+            ``False`` if the row was missing, owned by a different
+            user, or already in a non-idle status.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE threads
+                SET status = $3, updated_at = now()
+                WHERE id = $1
+                  AND user_id = $2
+                  AND status = 'idle'
+                RETURNING id
+                """,
+                thread_id,
+                user_id,
+                new_status,
+            )
+        if row is not None:
+            logger.debug(
+                "Thread status atomically transitioned",
+                thread_id=str(thread_id),
+                new_status=new_status,
+            )
+        return row is not None
 
     async def touch(self, thread_id: uuid.UUID) -> None:
         """Refresh ``last_activity_at`` and ``updated_at`` for a thread.
@@ -253,3 +362,55 @@ class ThreadRepository:
         if deleted:
             logger.info("Thread deleted", thread_id=str(thread_id), user_id=user_id)
         return deleted
+
+    async def delete_by_id(self, thread_id: uuid.UUID) -> bool:
+        """Hard-delete a thread row by id only (no owner check).
+
+        Used by the nightly ``cleanup_expired_threads`` sweep
+        (Phase 10, D10.4) which has no user context — the sweep
+        deletes rows for all users, so the user_id predicate from
+        :meth:`delete` cannot be applied.  For user-facing deletion
+        that needs the ownership guarantee, use :meth:`delete`.
+
+        Args:
+            thread_id: UUID of the thread to delete.
+
+        Returns:
+            ``True`` if a row was deleted, ``False`` if not found.
+        """
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM threads WHERE id = $1",
+                thread_id,
+            )
+        deleted = result == "DELETE 1"
+        if deleted:
+            logger.info("Thread deleted (sweep)", thread_id=str(thread_id))
+        return deleted
+
+    async def find_expired(self, cutoff: datetime) -> list[uuid.UUID]:
+        """Return IDs of threads whose last activity is older than ``cutoff``.
+
+        Used by the periodic cleanup job (Phase 10) to select threads
+        for hard-deleting after the 30-day inactivity window (FR-018).
+        Excludes threads already in ``status='deleting'`` so a second
+        job invocation cannot race the first to produce duplicate work.
+
+        Args:
+            cutoff: Threshold timestamp; threads with
+                ``last_activity_at < cutoff`` are returned.
+
+        Returns:
+            List of thread UUIDs eligible for cleanup.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id
+                FROM threads
+                WHERE last_activity_at < $1
+                  AND status != 'deleting'
+                """,
+                cutoff,
+            )
+        return [row["id"] for row in rows]

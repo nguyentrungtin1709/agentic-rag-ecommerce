@@ -13,7 +13,7 @@ C4Context
     System_Ext(saleor, "Saleor", "Open-source e-commerce platform. Product catalog source via GraphQL API. Sends HMAC-signed product lifecycle webhooks. Provides JWT tokens for customer authentication (JWKS/RS256).")
     System_Ext(openai, "OpenAI API", "LLM inference (RESPONSE_MODEL, ORCHESTRATOR_MODEL, TITLE_MODEL), text embeddings (EMBEDDING_MODEL), and DALL-E image generation.")
     System_Ext(tavily, "Tavily Search API", "Primary web search for real-time design trend data. DuckDuckGo used as fallback.")
-    System_Ext(langsmith, "LangSmith", "LLM/agent observability. Captures LangGraph traces and LlamaIndex OTel spans. Configurable via LANGCHAIN_TRACING_V2.")
+    System_Ext(langsmith, "LangSmith", "LLM/agent observability. Captures LangGraph traces and LlamaIndex OTel spans. Toggle: LANGSMITH_TRACING env var. Endpoint: LANGSMITH_ENDPOINT.")
     SystemDb_Ext(qdrant, "Qdrant Vector DB", "Product vector storage. Hybrid dense + sparse BM25 search with metadata filtering. Payload includes thumbnail_url.")
     SystemDb_Ext(postgres, "PostgreSQL 16", "LangGraph checkpointer (AgentState + all messages), LangGraph Store (user profiles), custom tables: threads, generated_images.")
     SystemDb_Ext(valkey, "Valkey", "Redis-compatible. DB/0: SlowAPI rate limiting. DB/1: fastapi-cache2 thread list cache.")

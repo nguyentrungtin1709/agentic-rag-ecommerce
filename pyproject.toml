@@ -28,6 +28,7 @@ dependencies = [
     "psycopg-pool==3.3.1",
     "asyncpg==0.31.0",
     "qdrant-client==1.18.0",
+    "fastembed>=0.7,<1.0",
     # Migrations (raw SQL via op.execute — no ORM models)
     "alembic==1.18.4",
     # Cache / Tasks
@@ -37,7 +38,12 @@ dependencies = [
     # Storage / Search
     "boto3==1.43.19",
     "tavily-python==0.7.25",
-    "duckduckgo-search==8.1.1",
+    # ``ddgs`` is the successor of ``duckduckgo-search`` and is
+    # required by ``langchain_community==0.4.2``'s
+    # ``DuckDuckGoSearchRun`` tool (16.0.0).  Pinned to a major
+    # range to allow bug-fix flow without breaking the tool's
+    # import contract.
+    "ddgs>=9.0.0,<10.0.0",
     # Auth
     "PyJWT==2.13.0",
     "cryptography==48.0.0",

@@ -5,6 +5,7 @@ Uses ``asyncpg`` directly (no ORM).
 
 from __future__ import annotations
 
+import datetime as _dt
 import uuid
 from datetime import UTC, datetime
 
@@ -44,7 +45,7 @@ class ImageRepository:
             prompt: The prompt used to generate the image.
             s3_key: S3 object key (path within the bucket).
             s3_url: Public S3 URL of the image.
-            model: Model identifier (e.g. ``"dall-e-3"``).
+            model: Model identifier (e.g. ``"gpt-image-2"``).
             request_message_id: ``HumanMessage.id`` that triggered
                 generation; links the image to its turn in thread history
                 (FR-020, FR-051).  ``None`` if unavailable.
@@ -125,3 +126,138 @@ class ImageRepository:
                 thread_id,
             )
         return [GeneratedImage(**dict(row)) for row in rows]
+
+    async def delete_by_thread(self, thread_id: uuid.UUID) -> int:
+        """Delete every image record for a thread.  Returns the row count.
+
+        Called by the ``delete_thread`` Celery task (Phase 10) AFTER
+        the S3 objects have been removed — the ordering matters to
+        avoid leaving dangling S3 URLs in the table (NFR-015).
+
+        Args:
+            thread_id: UUID of the parent thread.
+
+        Returns:
+            Number of rows deleted.
+        """
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM generated_images WHERE thread_id = $1",
+                thread_id,
+            )
+        # asyncpg returns a string like "DELETE 3" — parse the count.
+        deleted = int(result.split()[-1]) if result.startswith("DELETE") else 0
+        logger.info(
+            "Image records deleted",
+            thread_id=str(thread_id),
+            count=deleted,
+        )
+        return deleted
+
+    async def list_by_message_id(
+        self,
+        request_message_id: str,
+    ) -> list[GeneratedImage]:
+        """Return images triggered by a specific ``HumanMessage.id``.
+
+        Used by ``GET /threads/{id}/history`` to attach images to the
+        correct ``AIMessage`` turn (FR-020).
+
+        Args:
+            request_message_id: The ``HumanMessage.id`` that triggered
+                image generation.
+
+        Returns:
+            List of ``GeneratedImage`` models in chronological order
+            (oldest first).
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, thread_id, user_id, prompt, s3_key, s3_url, model,
+                       request_message_id, created_at
+                FROM generated_images
+                WHERE request_message_id = $1
+                ORDER BY created_at ASC
+                """,
+                request_message_id,
+            )
+        return [GeneratedImage(**dict(row)) for row in rows]
+
+    async def list_by_message_ids(
+        self,
+        message_ids: list[str],
+    ) -> dict[str, list[GeneratedImage]]:
+        """Return images for many ``HumanMessage.id`` values in one query.
+
+        Batch counterpart of :meth:`list_by_message_id` used by the
+        ``GET /threads/{id}/history`` endpoint (Phase 8, D8.9) to
+        avoid an N+1 loop when a page contains many human messages.
+        Reused by the Phase 14 chat SSE handler when emitting
+        ``image_ready`` events.
+
+        Args:
+            message_ids: ``HumanMessage.id`` values to look up. Order
+                does not matter; duplicates are de-duplicated by the
+                ``ANY`` predicate.
+
+        Returns:
+            Mapping from ``HumanMessage.id`` to a chronologically
+            ordered (``created_at`` ASC) list of
+            ``GeneratedImage``.  Keys are populated for every input
+            id — values are an empty list when no images matched,
+            so the caller can do ``images_by_msg.get(human_id)``
+            without a ``KeyError`` guard.  An empty input returns
+            an empty dict (and issues no SQL).
+        """
+        if not message_ids:
+            return {}
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, thread_id, user_id, prompt, s3_key, s3_url, model,
+                       request_message_id, created_at
+                FROM generated_images
+                WHERE request_message_id = ANY($1::text[])
+                ORDER BY request_message_id, created_at ASC
+                """,
+                message_ids,
+            )
+        grouped: dict[str, list[GeneratedImage]] = {mid: [] for mid in message_ids}
+        for row in rows:
+            mid = row["request_message_id"]
+            grouped.setdefault(mid, []).append(GeneratedImage(**dict(row)))
+        return grouped
+
+    async def count_by_user_date(
+        self,
+        user_id: str,
+        date: _dt.date,
+    ) -> int:
+        """Count images generated by a user on a single UTC calendar day.
+
+        Used as a backstop to the Redis-based quota (FR-052) when Valkey
+        is unavailable.  Called by the periodic cleanup job (Phase 10)
+        to detect quota bypass.
+
+        Args:
+            user_id: Saleor user ID.
+            date: Calendar date in the user's local frame (the SQL
+                applies the day window in UTC — Phase 10 normalises).
+
+        Returns:
+            Number of images created in ``[date, date+1day)``.
+        """
+        async with self._pool.acquire() as conn:
+            count: int = await conn.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM generated_images
+                WHERE user_id = $1
+                  AND created_at >= $2::timestamptz
+                  AND created_at < ($2::timestamptz + INTERVAL '1 day')
+                """,
+                user_id,
+                date,
+            )
+        return count

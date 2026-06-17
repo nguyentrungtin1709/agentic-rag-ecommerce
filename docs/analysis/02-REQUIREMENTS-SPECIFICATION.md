@@ -1,9 +1,18 @@
 # Requirements Specification — Agentic RAG Ecommerce
 
 **Project**: `agentic-rag-ecommerce` — AI POD Stylist & Recommendation System
-- **Version**: 1.0
-- **Date**: 2026-05-31
-- **Status**: Confirmed — Based on Phase 1 & 2 review (TEMP.md, all 22 items confirmed)
+- **Version**: 2.0
+- **Date**: 2026-06-11
+- **Status**: Confirmed — aligned with the multi-agent architecture (DRAFT 0.6)
+  and the implementation plan
+
+> **Scope of this document** — functional and non-functional requirements,
+> system constraints, database schema, API contract summary, and the
+> environment variable registry (WHAT the system must do).  For node
+> designs, state shape, and the orchestrator's six intent values see
+> [docs/analysis/04-MULTI-AGENT-ARCHITECTURE-DESIGN.md](04-MULTI-AGENT-ARCHITECTURE-DESIGN.md).
+> For phase status, audit, and test plans see
+> [docs/analysis/05-IMPLEMENTATION-PLAN.md](05-IMPLEMENTATION-PLAN.md).
 
 ---
 
@@ -87,13 +96,14 @@ priority level: **[MUST]** (MVP), **[SHOULD]** (high value), **[COULD]** (nice t
 |---|---|---|
 | FR-033 | The system must index product data from Saleor into Qdrant using LlamaIndex as the data pipeline layer | MUST |
 | FR-034 | Each product must be represented as a dense vector embedding generated from the concatenation of `product.name` and `product.description` using the model specified by `EMBEDDING_MODEL` env var (default: `text-embedding-3-small`, dims: `EMBEDDING_DIMS`, default: `1536`) | MUST |
-| FR-035 | Each Qdrant point must store the following metadata payload: `product_id`, `name`, `category`, `price_range`, `available`, `tags[]`, `saleor_url`, `thumbnail_url` (illustrative — verify field names against Saleor schema at implementation) | MUST |
+| FR-035 | Each Qdrant point must store the following metadata payload: `product_id`, `name`, `description` (plain text — **full** cleaned description, **NOT** truncated; HTML tags stripped, no length cap), `slug`, `available` (bool), `price_min` (float), `price_max` (float), `currency` (ISO 4217), `price_range` (display string, e.g. "100,000 - 300,000 VND"), `collections[]` (Saleor collection slugs), `thumbnail_url`, `saleor_url` | MUST |
+| FR-035a | The product indexer must build the **embedding text** as `f"{product.name}\n\n{product_description_for_embedding}"`, where `product_description_for_embedding` is the cleaned (HTML-stripped) description used as-is when `len(cleaned) <= DESCRIPTION_MAX_CHARS` (default 500) and the **`SUMMARIZE_MODEL`-generated summary** when `len(cleaned) > DESCRIPTION_MAX_CHARS`.  `DESCRIPTION_MAX_CHARS` is an **embedding-side** threshold only — it does NOT affect the `description` field stored in the Qdrant metadata payload (which is always the full cleaned text per FR-035).  See architecture doc §3.1 for rationale. | MUST |
 | FR-036 | The system must perform hybrid search combining dense semantic vectors (`EMBEDDING_MODEL`) and sparse keyword vectors (Qdrant FastEmbed BM25 built-in) | MUST |
-| FR-037 | Hybrid search must support metadata filtering by: `category`, `price_range`, `available`, and `tags` | MUST |
-| FR-038 | The system must return a configurable top-k (default: 5) ranked product results | MUST |
-| FR-039 | The Product RAG Engine must be implemented as a LangGraph sub-graph (or LangChain ReAct agent) capable of: query rewrite → dense search → sparse search → rerank → metadata filter | MUST |
+| FR-037 | Hybrid search must support metadata filtering by: `available == true` (hard filter, exclude out-of-stock) and `price_max <= {client_budget}` (when a budget is provided).  Category / collection / style attributes are NOT metadata filters — they are part of the query text rewritten by the LLM in `prepare_query_node` | MUST |
+| FR-038 | The system must return a configurable top-k ranked product results.  The default pipeline uses four env vars: `QDRANT_SPARSE_TOP_K=12` (per-leg sparse retrieval), `QDRANT_SIMILARITY_TOP_K=12` (per-leg dense retrieval), `QDRANT_HYBRID_TOP_K=9` (post-RRF candidates fed to the reranker), `QDRANT_RERANK_TOP_K=3` (final results returned to the agent) | MUST |
+| FR-039 | The Product RAG Engine must be implemented as a LangGraph `StateGraph` (3-stage fixed pipeline: `prepare_query_node` → `hybrid_search_node` → `llm_postprocess_node`).  It is NOT a ReAct agent — there are no internal tool-use decision points | MUST |
 | FR-040 | The Product RAG Node must formulate the search query in English before calling Qdrant (regardless of user input language); multilingual handling is done by the LLM, not the embedding model | MUST |
-| FR-041 | The agent must be able to select the appropriate search strategy based on the query (semantic only, keyword only, hybrid, or hybrid + metadata filter) | SHOULD |
+| FR-041 | REMOVED — superseded by FR-039.  The Product RAG pipeline uses a fixed 3-stage flow; there is no LLM-driven strategy selection | — |
 
 ---
 
@@ -104,7 +114,7 @@ priority level: **[MUST]** (MVP), **[SHOULD]** (high value), **[COULD]** (nice t
 | FR-042 | The Trend Scout Node must call the Tavily Search API to retrieve real-time design trend information | MUST |
 | FR-043 | The system must fall back to DuckDuckGo if Tavily returns an error or is unavailable | MUST |
 | FR-044 | The Trend Scout Node must summarize web search results into a structured trend report (top themes, color palettes, styles) stored in `AgentState.trend_summary` | MUST |
-| FR-045 | The system must generate 3-5 text-to-image prompt suggestions from the trend summary using an LLM; these are included in `AgentState.trend_summary` | SHOULD |
+| FR-045 | The system must generate **at most one** text-to-image prompt from the trend summary using an LLM.  The prompt is stored in a **separate** `AgentState.image_prompt` field (or `None` if the trend report did not warrant an image).  The text-to-image prompt is NOT embedded inside `trend_summary` | SHOULD |
 | FR-046 | Web search must be implemented as a LangChain `@tool` callable by the LangGraph agent | MUST |
 
 ---
@@ -128,15 +138,15 @@ priority level: **[MUST]** (MVP), **[SHOULD]** (high value), **[COULD]** (nice t
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-055 | The agent must use LangGraph to define a stateful multi-agent graph with the following primary nodes: `TitleGenerationNode`, `ProfilerNode`, `OrchestratorNode`, `ProductRAGAgent`, `TrendScoutNode`, `ImageGenerationNode`, `ResponseGeneratorNode` | MUST |
-| FR-056 | Nodes may be implemented as one of three patterns depending on complexity: (a) LangGraph sub-graph (nested compiled graph for complex conditional flows), (b) LangChain ReAct agent (for LLM + tool binding with internal loop), (c) plain Python function (for fixed logic, routing, transformations) | MUST |
-| FR-057 | The `AgentState` schema must include: `messages: list[BaseMessage]`, `user_profile: dict`, `retrieved_products: list[ProductItem]`, `trend_summary: str \| None`, `thread_title: str \| None`, `correlation_id: str` | MUST |
-| FR-058 | The Orchestrator Node must classify user intent into one of: `sufficient`, `clarification_needed`, `out_of_scope`, `fallback` | MUST |
+| FR-055 | The agent must use LangGraph to define a stateful multi-agent graph with eight primary nodes: `TitleGenerationNode`, `ProfilerNode`, `SummarizeNode`, `OrchestratorNode`, `ProductRAGAgent`, `TrendScoutNode`, `ImageGenerationNode`, `ResponseGeneratorNode` | MUST |
+| FR-056 | Nodes may be implemented as one of three patterns depending on complexity: (a) LangGraph sub-graph (nested compiled graph for complex conditional flows, used by `ProductRAGAgent`), (b) LangChain `create_agent` ReAct agent (for LLM + tool binding with internal loop, used by `TrendScoutNode`), (c) plain Python function (for fixed logic, routing, transformations, used by the simple nodes) | MUST |
+| FR-057 | The `AgentState` schema must include the FR-required fields plus the routing, memory, and generation control fields listed in [04-MULTI-AGENT-ARCHITECTURE-DESIGN.md §4](04-MULTI-AGENT-ARCHITECTURE-DESIGN.md).  FR fields: `messages: list[BaseMessage]`, `user_profile: dict`, `retrieved_products: list[ProductItem]`, `trend_summary: str \| None`, `thread_title: str \| None`, `correlation_id: str`.  Additional required fields: `user_id`, `thread_id`, `intent`, `title_generated`, `fallback_count`, `image_url`, `image_prompt`, `summary`, `generate_image`, `first_user_message` | MUST |
+| FR-058 | The Orchestrator Node must classify user intent into one of six values: `need_product_search`, `need_trend_info`, `sufficient`, `clarification_needed`, `out_of_scope`, `fallback` | MUST |
 | FR-059 | The Orchestrator Node must read `config["remaining_steps"]` before every routing decision; if `remaining_steps <= AGENT_FALLBACK_THRESHOLD`, it must force intent to `fallback` regardless of query content | MUST |
 | FR-060 | The `fallback` intent routes to the Response Generator with a best-effort prompt; the Response Generator uses all data collected so far in `AgentState` and acknowledges that results may be incomplete | MUST |
 | FR-061 | The `out_of_scope` intent routes to the Response Generator which declines politely; the Orchestrator must use POD fashion e-commerce as the domain boundary (style advice is in-scope; unrelated general queries are out-of-scope) | MUST |
 | FR-062 | The graph must enforce a maximum iteration ceiling via `MAX_AGENT_STEPS` env var, which maps directly to LangGraph `recursion_limit`; this is the hard ceiling — `AGENT_FALLBACK_THRESHOLD` provides the graceful degradation threshold below it | MUST |
-| FR-063 | `Product RAG Node` and `Trend Scout Node` must route back to the Orchestrator after completion for re-evaluation | MUST |
+| FR-063 | `ProductRAGAgent` and `TrendScoutNode` must route back to the Orchestrator after completion for re-evaluation | MUST |
 | FR-064 | `TitleGenerationNode` must run as a parallel branch on the first run only (when `title_generated == false`), independent of the main pipeline; it requires only `first_user_message` | SHOULD |
 | FR-065 | `ImageGenerationNode` must run as a parallel branch when trigger conditions are met, independent of `ResponseGeneratorNode` | SHOULD |
 | FR-066 | The graph must be compiled with `AsyncPostgresSaver` as checkpointer and `AsyncPostgresStore` as store | MUST |
@@ -150,9 +160,9 @@ priority level: **[MUST]** (MVP), **[SHOULD]** (high value), **[COULD]** (nice t
 |---|---|---|
 | FR-068 | The Response Generator Node must synthesize `user_profile`, `retrieved_products`, and `trend_summary` into a single coherent personalized response | MUST |
 | FR-069 | Responses must use the interleaved SSE block model: text tokens → `products` event (block separator) → text tokens → `image_ready` event → `done` event | MUST |
-| FR-070 | The `products` SSE event must include structured product data: `{id, name, price_range, saleor_url, tags, thumbnail_url}`; product links are in the product block, not embedded in text tokens | MUST |
+| FR-070 | The `products` SSE event must include structured product data: `{id, name, price_min, price_max, currency, price_range, collections, saleor_url, thumbnail_url}`; product links are in the product block, not embedded in text tokens.  The legacy `tags` field is replaced by `collections` (Saleor collection slugs) | MUST |
 | FR-071 | The Response Generator must use the model specified by `RESPONSE_MODEL` env var for response synthesis (heavier model) | MUST |
-| FR-072 | The Orchestrator, Profiler, and classification tasks must use the model specified by `ORCHESTRATOR_MODEL` env var (lighter model) | MUST |
+| FR-072 | The Orchestrator, Profiler, classification, summarize, and rerank tasks must use the lightweight model family (`ORCHESTRATOR_MODEL` / `SUMMARIZE_MODEL` / `RERANK_MODEL` env vars, all default to `gpt-5.4-mini`).  Each task's prompt is its own externalized `.md` file | MUST |
 
 ---
 
@@ -192,9 +202,9 @@ priority level: **[MUST]** (MVP), **[SHOULD]** (high value), **[COULD]** (nice t
 | ID | Requirement | Priority |
 |---|---|---|
 | FR-090 | The system must implement per-user rate limiting using `slowapi` with Valkey DB `/0` as the storage backend | MUST |
-| FR-091 | Rate limit key must be `user_id` extracted from the verified JWT (not IP address, as the service runs behind a load balancer) | MUST |
+| FR-091 | Rate limit key must be `user_id` extracted from the verified JWT (not IP address, as the service runs behind a load balancer).  Wiring of rate limits to the API routers is implemented in Phase 5.1 | MUST |
 | FR-092 | Rate limits must be configurable via environment variables; when a limit is exceeded the system must return `429 Too Many Requests` | MUST |
-| FR-093 | Rate limits per endpoint group (all values are defaults; configurable via env vars): `POST /runs/stream` = `RATE_LIMIT_CHAT` (default: 20/min), `POST /threads` = `RATE_LIMIT_THREAD_CREATE` (default: 10/min), GET endpoints = `RATE_LIMIT_READ` (default: 60/min for list, 30/min for history and profile), write/delete = `RATE_LIMIT_WRITE` (default: 10/min), `POST /admin/reindex` = `RATE_LIMIT_REINDEX` (default: 2/hour) | MUST |
+| FR-093 | Rate limits per endpoint group (all values are defaults; configurable via env vars): `POST /runs/stream` = `RATE_LIMIT_CHAT` (default: 20/min), `POST /threads` = `RATE_LIMIT_THREAD_CREATE` (default: 10/min), all GET endpoints (thread list, thread detail, history, profile) share `RATE_LIMIT_READ` (default: 60/min), write/delete = `RATE_LIMIT_WRITE` (default: 10/min), `POST /admin/reindex` = `RATE_LIMIT_REINDEX` (default: 2/hour) | MUST |
 | FR-094 | Webhook endpoint (`POST /webhooks/saleor`) and infrastructure endpoints (`/health`, `/ready`, `/metrics`) must not have rate limiting applied | MUST |
 
 ---
@@ -236,7 +246,7 @@ priority level: **[MUST]** (MVP), **[SHOULD]** (high value), **[COULD]** (nice t
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-107 | LangGraph and LangChain traces must be automatically sent to LangSmith by setting `LANGSMITH_TRACING=true`; no additional code instrumentation required <!-- [NOTE] Original spec used `LANGCHAIN_TRACING_V2=true` which is the legacy SDK env var.  The actual implementation uses `LANGSMITH_TRACING` (current LangSmith SDK standard); both are functionally equivalent but `LANGSMITH_TRACING` is the canonical name. --> | MUST |
+| FR-107 | LangGraph and LangChain traces must be automatically sent to LangSmith by setting `LANGSMITH_TRACING=true`; the SDK picks up the project from `LANGSMITH_PROJECT` and the endpoint from `LANGSMITH_ENDPOINT` (default: `https://aws.api.smith.langchain.com`).  No additional code instrumentation required.  The legacy `LANGCHAIN_TRACING_V2` env var is not used | MUST |
 | FR-108 | LlamaIndex operations (retrieval, embedding, reranking) inside LangGraph nodes must be bridged to LangSmith via `openinference-instrumentation-llama-index` (OTel spans → LangSmith OTel endpoint) | MUST |
 | FR-109 | The system must expose Prometheus metrics at `GET /metrics` using `prometheus-fastapi-instrumentator` (zero-configuration auto-instrumentation) | MUST |
 | FR-110 | All application logs must use `structlog` with JSON renderer; output to stdout for Docker log capture | MUST |
@@ -437,23 +447,29 @@ CREATE INDEX IF NOT EXISTS ix_generated_images_request_message_id
 ### 4.3 Qdrant Collection Schema (`products`)
 
 ```python
-# Qdrant point payload (illustrative — verify field names at implementation)
+# Qdrant point payload (matches ProductItem / ProductPayload models)
 {
-    "product_id":    "string",     # Saleor product ID
-    "name":          "string",
-    "description":   "string",
-    "category":      "string",
-    "price_range":   "string",     # e.g., "100,000 - 300,000 VND"
-    "available":     bool,
-    "tags":          ["string"],
-    "saleor_url":    "string",     # direct product page URL
-    "thumbnail_url": "string"      # product thumbnail for SSE products event
+    "product_id":    "string",         # Saleor product ID (base64 GraphQL Node ID)
+    "name":          "string",         # product display name
+    "description":   "string",         # plain text, truncated to DESCRIPTION_MAX_CHARS
+    "slug":          "string",         # Saleor product slug
+    "available":     bool,             # isAvailable from Saleor
+    "price_min":     float,            # min price in `currency`
+    "price_max":     float,            # max price in `currency`
+    "currency":      "string",         # ISO 4217 (e.g. "VND", "USD")
+    "price_range":   "string",         # display string (e.g. "100,000 - 300,000 VND")
+    "collections":   ["string"],       # Saleor collection slugs (replaces legacy `tags`)
+    "thumbnail_url": "string",         # product thumbnail for SSE products event
+    "saleor_url":    "string",         # direct product page URL
 }
 ```
 
-**Vector configuration:**
-- Dense vector: `EMBEDDING_MODEL` (default: `text-embedding-3-small`), dims: `EMBEDDING_DIMS` (default: 1536)
-- Sparse vector: Qdrant FastEmbed BM25 (built-in, no separate hosting required)
+**Vector configuration** (matches `qdrant_service.py`):
+
+- Dense vector name: `text-dense` (size = `EMBEDDING_DIMS` default 1536, COSINE, HNSW m=16, ef_construct=100).  The name `text-dense` aligns with the LlamaIndex `QdrantVectorStore` default when `enable_hybrid=True`.
+- Sparse vector name: `text-sparse` (BM25 via Qdrant's built-in FastEmbed, `on_disk=False`).
+- Metadata filterable fields: `available` (bool, hard filter `available == true`) and `price_max` (float, LTE filter when a budget is provided).
+- `ensure_collection` is drop-and-recreate tolerant: a collection with mismatched `vectors_config` / `sparse_vectors_config` (e.g. legacy `dense` / `sparse` names) is recreated.  Safe before the first reindex run.
 
 ---
 
@@ -502,12 +518,13 @@ are hard-coded in source code.
 
 | Variable | Description | Default | Required |
 |---|---|---|---|
-| `DATABASE_URL` | PostgreSQL connection string (asyncpg DSN) | — | YES |
-| `QDRANT_URL` | Qdrant instance URL | `http://qdrant:6379` | YES |
+| `DATABASE_URL` | PostgreSQL connection string (async psycopg v3 DSN) | — | YES |
+| `QDRANT_URL` | Qdrant instance URL | `http://qdrant:6333` | YES |
 | `QDRANT_API_KEY` | Qdrant API key (if auth enabled) | — | conditional |
 | `QDRANT_COLLECTION_NAME` | Qdrant collection name for products | `products` | YES |
-| `VALKEY_URL` | Valkey (Redis-compatible) base URL | `redis://valkey:6379` | YES |
+| `VALKEY_URL` | Valkey (Redis-compatible) base URL (no DB index) | `redis://valkey:6379` | YES |
 | `CELERY_BROKER_URL` | RabbitMQ AMQP URL for Celery | `amqp://guest:guest@rabbitmq:5672//` | YES |
+| `CELERY_RESULT_BACKEND` | Valkey DB 2 (Celery result backend) | `redis://valkey:6379/2` | YES |
 
 ### 6.2 External API Credentials
 
@@ -532,9 +549,11 @@ are hard-coded in source code.
 
 | Variable | Description | Default | Required |
 |---|---|---|---|
-| `RESPONSE_MODEL` | LLM model for Response Generator (high-quality) | — | YES |
-| `ORCHESTRATOR_MODEL` | LLM model for Orchestrator, Profiler (lightweight) | — | YES |
-| `TITLE_MODEL` | LLM model for TitleGenerationNode | — | YES |
+| `RESPONSE_MODEL` | LLM for the Response Generator (heavier model) | `gpt-5.4` | YES |
+| `ORCHESTRATOR_MODEL` | LLM for Orchestrator + Profiler + prepare_query + trend scout | `gpt-5.4-mini` | YES |
+| `TITLE_MODEL` | LLM for TitleGenerationNode (cheapest model) | `gpt-5.4-nano` | YES |
+| `SUMMARIZE_MODEL` | LLM for SummarizeNode + Profiler merge | `gpt-5.4-mini` | YES |
+| `RERANK_MODEL` | LLM for Product RAG `llm_postprocess_node` reranking | `gpt-5.4-mini` | YES |
 | `EMBEDDING_MODEL` | OpenAI embedding model name | `text-embedding-3-small` | YES |
 | `EMBEDDING_DIMS` | Embedding vector dimensions | `1536` | YES |
 
@@ -545,6 +564,8 @@ are hard-coded in source code.
 | `MAX_AGENT_STEPS` | LangGraph `recursion_limit` — hard ceiling on agent iterations | `10` | YES |
 | `AGENT_FALLBACK_THRESHOLD` | Remaining steps at which Orchestrator forces `fallback` intent | `2` | YES |
 | `IMAGE_DAILY_LIMIT` | Max generated images per user per day | `10` | YES |
+| `MESSAGE_SUMMARIZE_THRESHOLD` | When `len(messages) > THRESHOLD`, `SummarizeNode` collapses the oldest messages | `12` | YES |
+| `MESSAGE_SUMMARIZE_COUNT` | Number of oldest messages removed and replaced with a summary per pass | `8` | YES |
 
 ### 6.6 Thread Auto-Naming
 
@@ -552,6 +573,7 @@ are hard-coded in source code.
 |---|---|---|---|
 | `TITLE_GENERATION_MAX_ATTEMPTS` | Max LLM retry attempts for title generation across runs | `3` | YES |
 | `TITLE_TRUNCATION_LENGTH` | Character length for fallback title truncation | `50` | YES |
+| `SALEOR_STOREFRONT_URL` | Base URL used to build `saleor_url` in the Qdrant payload (e.g. `https://shop.example.com`) | — | conditional |
 
 ### 6.7 Rate Limiting
 
@@ -573,10 +595,26 @@ are hard-coded in source code.
 
 | Variable | Description | Default | Required |
 |---|---|---|---|
-| `LANGCHAIN_TRACING_V2` | Enable LangSmith tracing (`true`/`false`) | `false` | YES (prod) |
+| `LANGSMITH_TRACING` | Enable LangSmith tracing (`true`/`false`) | `false` | YES (prod) |
 | `LANGSMITH_API_KEY` | LangSmith API key | — | conditional |
-| `LANGSMITH_PROJECT` | LangSmith project name for trace grouping | — | conditional |
+| `LANGSMITH_PROJECT` | LangSmith project name for trace grouping | `agentic-rag-ecommerce` | conditional |
+| `LANGSMITH_ENDPOINT` | LangSmith API endpoint URL (region-aware: `api.smith.langchain.com`, `eu.api.smith.langchain.com`, `apac.api.smith.langchain.com`, `aws.api.smith.langchain.com`) | `https://aws.api.smith.langchain.com` | conditional |
 | `LOG_LEVEL` | Structlog log level (`DEBUG`/`INFO`/`WARNING`/`ERROR`) | `INFO` | YES |
+
+### 6.10 Qdrant Search Top-K (Product RAG)
+
+| Variable | Description | Default | Required |
+|---|---|---|---|
+| `QDRANT_SPARSE_TOP_K` | Top-k results returned by the sparse (BM25) leg of hybrid search | `12` | YES |
+| `QDRANT_SIMILARITY_TOP_K` | Top-k results returned by the dense leg of hybrid search | `12` | YES |
+| `QDRANT_HYBRID_TOP_K` | Top-k RRF-fused candidates fed to the reranker stage | `9` | YES |
+| `QDRANT_RERANK_TOP_K` | Top-k final results returned by the reranker to the agent | `3` | YES |
+
+### 6.11 Ingestion
+
+| Variable | Description | Default | Required |
+|---|---|---|---|
+| `DESCRIPTION_MAX_CHARS` | Max characters of the product description stored in the Qdrant payload | `500` | YES |
 
 ---
 

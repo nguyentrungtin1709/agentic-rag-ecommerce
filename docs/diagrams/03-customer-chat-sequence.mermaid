@@ -11,6 +11,7 @@ sequenceDiagram
     participant LG as LangGraph
     participant TitleGen as TitleGenerationNode
     participant Profiler as Profiler Node
+    participant Summarize as Summarize Node
     participant Orch as Orchestrator Node
     participant RAG as Product RAG Agent
     participant Trend as Trend Scout Node
@@ -50,27 +51,42 @@ sequenceDiagram
     rect rgb(230, 245, 255)
         Note over LG, Profiler: Profiler Node
         LG->>Profiler: Execute
-        Profiler->>OpenAI: Merge profile (ORCHESTRATOR_MODEL, current_profile_json + latest_message only)
+        Profiler->>OpenAI: Merge profile (SUMMARIZE_MODEL, current_profile_json + latest_message only)
         OpenAI-->>Profiler: updated_profile
         Profiler->>PG: Store.aput(namespace=profiles/user_id, updated_profile)
     end
 
-    rect rgb(255, 245, 230)
-        Note over LG, Orch: Orchestrator Node
-        Profiler->>Orch: Pass updated AgentState
-        Orch->>Orch: Check remaining_steps vs AGENT_FALLBACK_THRESHOLD
-        Orch->>OpenAI: Classify intent (ORCHESTRATOR_MODEL)
-        OpenAI-->>Orch: intent = sufficient | clarification_needed | out_of_scope | fallback
+    rect rgb(230, 250, 230)
+        Note over LG, Summarize: Summarize Node
+        Profiler->>Summarize: Pass updated AgentState
+        alt len(messages) < MESSAGE_SUMMARIZE_THRESHOLD
+            Summarize-->>LG: no-op
+        else threshold reached
+            Summarize->>Summarize: Cut at MESSAGE_SUMMARIZE_COUNT, walk back to HumanMessage boundary
+            Summarize->>OpenAI: Summarize slice (SUMMARIZE_MODEL)
+            OpenAI-->>Summarize: new summary text
+            Summarize-->>LG: RemoveMessage(delete) + summary update
+        end
     end
 
-    alt intent requires product search
+    rect rgb(255, 245, 230)
+        Note over LG, Orch: Orchestrator Node
+        Summarize->>Orch: Pass AgentState (with summary)
+        Orch->>Orch: Check remaining_steps vs AGENT_FALLBACK_THRESHOLD
+        Orch->>OpenAI: Classify intent (ORCHESTRATOR_MODEL, update_intent tool)
+        OpenAI-->>Orch: intent = need_product_search | need_trend_info | sufficient | clarification_needed | out_of_scope | fallback
+    end
+
+    alt intent = need_product_search (or need_trend_info for combined UC)
         rect rgb(230, 255, 230)
-            Note over LG, RAG: Product RAG Agent
+            Note over LG, RAG: Product RAG Agent (LangGraph 3-stage StateGraph)
             Orch->>RAG: Route to Product RAG
-            RAG->>OpenAI: Rewrite query to English (ORCHESTRATOR_MODEL)
-            OpenAI-->>RAG: optimized_query
-            RAG->>Qdrant: Hybrid search (dense + BM25 + metadata filter)
-            Qdrant-->>RAG: top-k products with thumbnail_url
+            RAG->>OpenAI: prepare_query_node — rewrite to English, structure filters (ORCHESTRATOR_MODEL)
+            OpenAI-->>RAG: PrepareQueryOutput
+            RAG->>Qdrant: hybrid_search_node — dense (text-dense) + sparse (text-sparse) + available/price_max filter
+            Qdrant-->>RAG: QDRANT_HYBRID_TOP_K=9 candidates
+            RAG->>OpenAI: llm_postprocess_node — rerank (RERANK_MODEL)
+            OpenAI-->>RAG: QDRANT_RERANK_TOP_K=3 final products
             RAG->>Orch: Return with retrieved_products in AgentState
         end
         rect rgb(255, 245, 230)
@@ -78,15 +94,16 @@ sequenceDiagram
             Orch->>OpenAI: Re-evaluate (ORCHESTRATOR_MODEL)
             OpenAI-->>Orch: intent = sufficient
         end
-    else intent requires trend search
+    else intent = need_trend_info
         rect rgb(255, 230, 230)
-            Note over LG, Trend: Trend Scout Node
+            Note over LG, Trend: Trend Scout Node (LangChain create_agent ReAct loop)
             Orch->>Trend: Route to Trend Scout
-            Trend->>Tavily: Web search for design trends
+            Trend->>Tavily: @tool tavily_search (DuckDuckGo fallback)
             Tavily-->>Trend: Search results
-            Trend->>OpenAI: Summarize trends + generate prompts (ORCHESTRATOR_MODEL)
-            OpenAI-->>Trend: trend_summary (themes + text-to-image prompts)
-            Trend->>Orch: Return with trend_summary in AgentState
+            Trend->>OpenAI: Summarize trends (ORCHESTRATOR_MODEL) -> trend_summary
+            Trend->>OpenAI: Generate at most 1 image_prompt -> stored in AgentState.image_prompt (separate field)
+            OpenAI-->>Trend: TrendScoutOutput(trend_summary, image_prompt)
+            Trend->>Orch: Return with trend_summary + image_prompt in AgentState
         end
     end
 

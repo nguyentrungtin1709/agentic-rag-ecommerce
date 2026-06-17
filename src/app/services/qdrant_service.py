@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import structlog
 from qdrant_client import AsyncQdrantClient
+from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.http.models import (
     Distance,
     HnswConfigDiff,
@@ -21,8 +22,12 @@ from app.config import Settings
 
 logger = structlog.get_logger(__name__)
 
-_DENSE_VECTOR_NAME = "dense"
-_SPARSE_VECTOR_NAME = "sparse"
+# Match LlamaIndex QdrantVectorStore defaults with enable_hybrid=True
+# (see llama_index/vector_stores/qdrant/base.py).  Phase 4 migrated
+# from "dense"/"sparse" to "text-dense"/"text-sparse" to align with
+# the LlamaIndex default and enable hybrid search out of the box.
+_DENSE_VECTOR_NAME = "text-dense"
+_SPARSE_VECTOR_NAME = "text-sparse"
 
 
 class QdrantService:
@@ -53,16 +58,59 @@ class QdrantService:
         return self._collection
 
     async def ensure_collection(self) -> None:
-        """Create the products collection if it does not already exist.
+        """Create the products collection with the correct hybrid config.
 
-        Uses hybrid vector config: dense (cosine, HNSW) + sparse (BM25
-        via FastEmbed).  Called once at application startup.
+        Behaviour:
+
+        1. If the collection does not exist, create it with dense
+           (``text-dense``) and sparse (``text-sparse``) vector
+           configs.
+        2. If it exists, inspect its current ``vectors_config`` and
+           ``sparse_vectors_config``.  When the configured vector
+           names match, this is a no-op.
+        3. When the existing collection uses different vector names
+           (e.g. legacy ``dense``/``sparse`` from before Phase 4),
+           log a WARNING and drop + recreate it.  Phase 6 ingestion
+           has not run yet at this point, so the collection holds at
+           most dev test data — recreation is safe.
+
+        Called once at application startup (inside FastAPI
+        ``lifespan``).
         """
-        exists = await self._client.collection_exists(self._collection)
-        if exists:
-            logger.info("Qdrant collection already exists", collection=self._collection)
+        if not await self._client.collection_exists(self._collection):
+            await self._create_collection()
             return
 
+        try:
+            info = await self._client.get_collection(self._collection)
+        except UnexpectedResponse:
+            await self._create_collection()
+            return
+
+        vectors = getattr(info.config.params, "vectors", None)
+        sparse_vectors = getattr(info.config.params, "sparse_vectors", None)
+
+        dense_ok = isinstance(vectors, dict) and _DENSE_VECTOR_NAME in vectors
+        sparse_ok = isinstance(sparse_vectors, dict) and _SPARSE_VECTOR_NAME in sparse_vectors
+
+        if dense_ok and sparse_ok:
+            logger.info(
+                "Qdrant collection already exists with expected config",
+                collection=self._collection,
+            )
+            return
+
+        logger.warning(
+            "Qdrant collection has mismatched vector config — recreating",
+            collection=self._collection,
+            has_dense_vector=dense_ok,
+            has_sparse_vector=sparse_ok,
+        )
+        await self._client.delete_collection(collection_name=self._collection)
+        await self._create_collection()
+
+    async def _create_collection(self) -> None:
+        """Create the products collection with hybrid dense + sparse config."""
         await self._client.create_collection(
             collection_name=self._collection,
             vectors_config={
@@ -73,13 +121,17 @@ class QdrantService:
                 ),
             },
             sparse_vectors_config={
-                _SPARSE_VECTOR_NAME: SparseVectorParams(index=SparseIndexParams(on_disk=False)),
+                _SPARSE_VECTOR_NAME: SparseVectorParams(
+                    index=SparseIndexParams(on_disk=False),
+                ),
             },
         )
         logger.info(
             "Qdrant collection created",
             collection=self._collection,
             dims=self._dims,
+            dense_vector_name=_DENSE_VECTOR_NAME,
+            sparse_vector_name=_SPARSE_VECTOR_NAME,
         )
 
     async def close(self) -> None:

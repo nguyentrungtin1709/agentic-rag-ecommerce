@@ -3,9 +3,25 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+# Load .env.local (git-ignored) at import time so the integration test
+# fixtures can pick up SALEOR_ADMIN_EMAIL / SALEOR_TEST_USER_* etc.
+# See ``docs/SALEOR-APP-WEBHOOK-SETUP.md`` Step 6 for the variables
+# this file is expected to provide.
+try:
+    from dotenv import load_dotenv
+
+    _env_local = Path(__file__).resolve().parent.parent / ".env.local"
+    if _env_local.is_file():
+        load_dotenv(_env_local, override=False)
+except ImportError:
+    # python-dotenv is optional; the integration fixtures will skip
+    # with a clear message if the env vars are missing.
+    pass
 
 
 @pytest.fixture(scope="session")

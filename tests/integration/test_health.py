@@ -1,9 +1,18 @@
-"""Integration tests — /health endpoint against the running app.
+"""Integration tests — /health and /ready endpoints against the running app.
 
-Verifies that:
-- GET /health returns HTTP 200 when all services are up.
-- The response body contains ``status: ok``.
-- All three dependency checks (postgres, qdrant, valkey) are True.
+After the /health vs /ready split (FR-105 liveness, FR-106 readiness):
+
+- ``GET /health`` is the liveness probe.  It returns 200 with
+  ``status='ok'`` as long as the FastAPI process is alive.  No
+  external dependency checks are performed (so the ``checks`` field
+  is always empty in the response).
+- ``GET /ready`` is the readiness probe.  It returns 200 only when
+  PostgreSQL, Qdrant, and Valkey are all reachable.  The ``checks``
+  field reports per-dependency status.
+
+This file covers both endpoints, scoped to their current role.
+Degraded / failing-dependency cases for ``/ready`` are covered by
+``test_ready_degraded.py``.
 """
 
 from __future__ import annotations
@@ -24,7 +33,7 @@ async def app_client() -> AsyncGenerator[httpx.AsyncClient, None]:
 
 
 async def test_health_returns_200(app_client: httpx.AsyncClient) -> None:
-    """GET /health must return HTTP 200 when all dependencies are healthy."""
+    """GET /health must return HTTP 200 when the process is alive (FR-105)."""
     response = await app_client.get("/health")
     assert response.status_code == 200, (
         f"Expected 200, got {response.status_code}. Response: " + response.text
@@ -32,25 +41,38 @@ async def test_health_returns_200(app_client: httpx.AsyncClient) -> None:
 
 
 async def test_health_status_ok(app_client: httpx.AsyncClient) -> None:
-    """Response body must contain status='ok'."""
+    """GET /health body must contain status='ok' and an empty checks dict.
+
+    The liveness probe intentionally reports no dependency checks; the
+    response shape is fixed so Kubernetes liveness probes can rely on
+    it.  The ``checks`` field is present but always empty.
+    """
     response = await app_client.get("/health")
     body = response.json()
     assert body.get("status") == "ok", f"Unexpected status in response: {body}"
-
-
-async def test_health_all_checks_true(app_client: httpx.AsyncClient) -> None:
-    """All dependency checks (postgres, qdrant, valkey) must be True."""
-    response = await app_client.get("/health")
-    checks: dict[str, bool] = response.json().get("checks", {})
-    assert checks.get("postgres") is True, f"postgres check failed: {checks}"
-    assert checks.get("qdrant") is True, f"qdrant check failed: {checks}"
-    assert checks.get("valkey") is True, f"valkey check failed: {checks}"
+    assert body.get("checks") == {}, f"Liveness probe must not report checks: {body}"
 
 
 async def test_health_response_schema(app_client: httpx.AsyncClient) -> None:
-    """Response must include both 'status' and 'checks' keys."""
+    """GET /health must include both 'status' and 'checks' keys."""
     response = await app_client.get("/health")
     body = response.json()
     assert "status" in body, f"'status' key missing from response: {body}"
     assert "checks" in body, f"'checks' key missing from response: {body}"
     assert isinstance(body["checks"], dict)
+
+
+async def test_ready_returns_200_when_all_deps_healthy(
+    app_client: httpx.AsyncClient,
+) -> None:
+    """GET /ready must return 200 with all dependency checks True (FR-106)."""
+    response = await app_client.get("/ready")
+    assert response.status_code == 200, (
+        f"Expected 200, got {response.status_code}. Response: " + response.text
+    )
+    body = response.json()
+    assert body.get("status") == "ok", f"Unexpected status: {body}"
+    checks: dict[str, bool] = body.get("checks", {})
+    assert checks.get("postgres") is True, f"postgres check failed: {checks}"
+    assert checks.get("qdrant") is True, f"qdrant check failed: {checks}"
+    assert checks.get("valkey") is True, f"valkey check failed: {checks}"

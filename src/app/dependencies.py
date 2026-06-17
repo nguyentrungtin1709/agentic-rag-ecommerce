@@ -14,13 +14,21 @@ import jwt
 import structlog
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from langgraph.pregel import Pregel
+from langgraph.store.base import BaseStore
+from openai import AsyncOpenAI
 
 from app.auth.jwt_verifier import verify_token
 from app.config import Settings, get_settings
 from app.db.session import get_asyncpg_pool
 from app.repositories.image_repo import ImageRepository
+from app.repositories.ingestion_repo import (
+    IngestionBatchRepository,
+    IngestionJobRepository,
+)
 from app.repositories.thread_repo import ThreadRepository
 from app.services.qdrant_service import QdrantService
+from app.services.s3_service import S3Service
 from app.services.valkey_service import ValkeyService
 
 logger = structlog.get_logger(__name__)
@@ -43,14 +51,28 @@ SettingsDep = Annotated[Settings, Depends(get_app_settings)]
 
 
 async def get_current_user(
+    request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer_scheme)],
     settings: SettingsDep,
 ) -> dict:
     """Validate the Bearer JWT and return the decoded claims.
 
+    The ``iss`` claim is verified against ``settings.saleor_jwt_issuer``
+    when set, falling back to ``settings.saleor_url`` for backwards
+    compatibility.  This split lets the application fetch the JWKS from
+    a Docker-internal alias (e.g. ``host.docker.internal``) while still
+    validating the user-visible ``iss`` URL set by Saleor.
+
+    The verified claims are also stashed on ``request.state.current_user``
+    so downstream cache key builders (e.g. ``thread_list_key_builder``)
+    can read the authenticated user without re-parsing the token
+    (D8.7 / Q1).
+
     Args:
+        request: Inbound FastAPI request — used to expose the claims
+            on ``request.state`` for downstream consumers.
         credentials: Extracted by ``HTTPBearer`` from the Authorization header.
-        settings: Application settings for ``saleor_url``.
+        settings: Application settings for ``saleor_url`` and JWT issuer.
 
     Returns:
         Decoded JWT payload dict.
@@ -59,13 +81,19 @@ async def get_current_user(
         HTTPException: 401 if the token is invalid or expired.
     """
     try:
-        return await verify_token(credentials.credentials, settings.saleor_url)
+        claims = await verify_token(
+            credentials.credentials,
+            settings.saleor_url,
+            issuer=settings.saleor_jwt_issuer or None,
+        )
     except jwt.PyJWTError as exc:
         logger.warning("JWT verification failed", error=str(exc))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token.",
         ) from exc
+    request.state.current_user = claims
+    return claims
 
 
 CurrentUserDep = Annotated[dict, Depends(get_current_user)]
@@ -121,8 +149,32 @@ def get_image_repo(pool: PoolDep) -> ImageRepository:
     return ImageRepository(pool)
 
 
+def get_ingestion_job_repo(pool: PoolDep) -> IngestionJobRepository:
+    """Construct an ``IngestionJobRepository`` scoped to the current request.
+
+    Used by the admin ``POST /admin/reindex`` and
+    ``GET /admin/reindex/{job_id}`` endpoints (Phase 6).  Celery
+    worker tasks construct this class directly via
+    :func:`app.db.session.get_asyncpg_pool` because they run outside
+    the FastAPI app context where ``Depends`` is unavailable.
+    """
+    return IngestionJobRepository(pool)
+
+
+def get_ingestion_batch_repo(pool: PoolDep) -> IngestionBatchRepository:
+    """Construct an ``IngestionBatchRepository`` scoped to the current request.
+
+    Used by the admin ``GET /admin/reindex/{job_id}`` endpoint to list
+    per-batch status.  Celery worker tasks construct this class
+    directly via :func:`app.db.session.get_asyncpg_pool`.
+    """
+    return IngestionBatchRepository(pool)
+
+
 ThreadRepoDep = Annotated[ThreadRepository, Depends(get_thread_repo)]
 ImageRepoDep = Annotated[ImageRepository, Depends(get_image_repo)]
+IngestionJobRepoDep = Annotated[IngestionJobRepository, Depends(get_ingestion_job_repo)]
+IngestionBatchRepoDep = Annotated[IngestionBatchRepository, Depends(get_ingestion_batch_repo)]
 
 
 # ── Services ──────────────────────────────────────────────────────────────────
@@ -138,5 +190,51 @@ def get_valkey_service(request: Request) -> ValkeyService:
     return request.app.state.valkey
 
 
+def get_s3_service(request: Request) -> S3Service:
+    """Return the ``S3Service`` singleton from app state (Phase 5.8)."""
+    return request.app.state.s3
+
+
+def get_openai_client(request: Request) -> AsyncOpenAI:
+    """Return the ``AsyncOpenAI`` singleton from app state (Phase 5.8).
+
+    Consumed by the image-generation node (Phase 13) — the gpt-image
+    family is the default model since 16.1.0.  Stored as a bare
+    ``AsyncOpenAI``; no wrapper class (see
+    ``history/5_0_0_SHARED_RESOURCE_INJECTION.md`` ADR D5.7).
+    """
+    return request.app.state.openai
+
+
+def get_graph(request: Request) -> Pregel:
+    """Return the compiled LangGraph state graph from app state (Phase 8).
+
+    Set in ``app.main.lifespan`` after the LangGraph checkpointer
+    and store are ready.  Consumed by ``GET /api/v1/threads/{id}/history``
+    to read the latest ``StateSnapshot`` for a thread.
+    """
+    return request.app.state.graph
+
+
+def get_store(request: Request) -> BaseStore:
+    """Return the ``AsyncPostgresStore`` singleton from app state (Phase 9).
+
+    The store holds long-term user state outside the per-thread
+    checkpoint — currently the ``("profiles", user_id)`` namespace
+    with key ``"profile"`` (see ``app.agent.nodes.profiler``).  Set
+    in ``app.main.lifespan`` and consumed by
+    ``GET /api/v1/users/{user_id}/profile`` to surface the latest
+    style profile to admin operators (FR-032).
+
+    See ``history/9_0_0_PROFILE_AND_ADMIN_API.md`` decision D9.1
+    and D9.2.
+    """
+    return request.app.state.store
+
+
 QdrantDep = Annotated[QdrantService, Depends(get_qdrant_service)]
 ValkeyDep = Annotated[ValkeyService, Depends(get_valkey_service)]
+S3Dep = Annotated[S3Service, Depends(get_s3_service)]
+OpenAIDep = Annotated[AsyncOpenAI, Depends(get_openai_client)]
+GraphDep = Annotated[Pregel, Depends(get_graph)]
+StoreDep = Annotated[BaseStore, Depends(get_store)]

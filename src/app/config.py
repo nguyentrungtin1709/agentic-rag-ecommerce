@@ -39,7 +39,7 @@ class Settings(BaseSettings):
 
     # ── LLM Model Names ─────────────────────────────────────────────────────
     response_model: str = Field(default="gpt-4o")
-    orchestrator_model: str = Field(default="gpt-4o-mini")
+    orchestrator_model: str = Field(default="gpt-5.4-mini")
     title_model: str = Field(default="gpt-4o-mini")
     embedding_model: str = Field(default="text-embedding-3-small")
     embedding_dims: int = Field(default=1536)
@@ -49,6 +49,15 @@ class Settings(BaseSettings):
 
     # ── Saleor ──────────────────────────────────────────────────────────────
     saleor_url: str = Field(default="http://localhost:8080")
+    saleor_jwt_issuer: str = Field(
+        default="",
+        description=(
+            "Expected JWT ``iss`` claim.  Saleor sets ``iss`` to the user-visible "
+            "GraphQL endpoint (e.g. ``http://localhost:8000/graphql/``) which may "
+            "differ from the Docker-internal ``SALEOR_URL`` used to fetch JWKS. "
+            "When empty, ``saleor_url`` is used as the issuer."
+        ),
+    )
     saleor_app_token: str = Field(default="")
     saleor_webhook_secret: str = Field(
         ..., description="HMAC-SHA256 webhook secret (min 32 chars)."
@@ -60,14 +69,81 @@ class Settings(BaseSettings):
     aws_secret_access_key: str = Field(default="")
     aws_region: str = Field(default="ap-southeast-1")
 
+    # ── Message Summarization ───────────────────────────────────────────────
+    message_summarize_threshold: int = Field(default=12)
+    message_summarize_count: int = Field(default=8)
+
+    # ── LLM Model Names (extended) ──────────────────────────────────────────
+    rerank_model: str = Field(default="gpt-5.4-mini")
+    summarize_model: str = Field(default="gpt-5.4-mini")
+
+    # ── Qdrant Search Top-K ─────────────────────────────────────────────────
+    qdrant_sparse_top_k: int = Field(default=12)
+    qdrant_similarity_top_k: int = Field(default=12)
+    qdrant_hybrid_top_k: int = Field(default=9)
+    qdrant_rerank_top_k: int = Field(default=3)
+
+    # ── Ingestion ───────────────────────────────────────────────────────────
+    description_max_chars: int = Field(default=500)
+    saleor_storefront_url: str = Field(default="")
+    reindex_batch_size: int = Field(
+        default=100,
+        ge=1,
+        description="Number of products per Qdrant upsert batch during reindex.",
+    )
+    description_summarize_concurrency: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Max concurrent OpenAI summarization calls in ProductIndexer. "
+            "Bounds the asyncio.Semaphore used to protect OpenAI RPM/TPM."
+        ),
+    )
+
     # ── Agent Behavior ──────────────────────────────────────────────────────
     max_agent_steps: int = Field(default=10)
     agent_fallback_threshold: int = Field(default=2)
     image_daily_limit: int = Field(default=10)
+    image_generation_model: str = Field(
+        default="gpt-image-2",
+        description=(
+            "OpenAI image model used by the ``generate_image`` node "
+            "(16.1.0).  The gpt-image family always returns base64 "
+            "payloads (``b64_json``) — no signed URL, no "
+            "``response_format`` parameter.  ``dall-e-3`` / "
+            "``dall-e-2`` are no longer supported on the API key "
+            "shipped with this project (verified 16.1.0)."
+        ),
+    )
+    chat_run_timeout_seconds: int = Field(
+        default=120,
+        ge=10,
+        description=(
+            "Hard timeout for a single chat run (D14.10).  ``asyncio.timeout`` "
+            "wraps ``graph.ainvoke`` in the chat endpoint; on expiry the "
+            "background task emits an ``error {code: graph_timeout}`` SSE "
+            "event and resets the thread to idle.  Default 120s leaves headroom "
+            "for a single extra node hop beyond the per-node 10s/30s/60s LLM "
+            "timeouts (NFR-010).  Lower this in dev to exercise the timeout path "
+            "without waiting two minutes."
+        ),
+    )
 
     # ── Thread Auto-Naming ──────────────────────────────────────────────────
     title_generation_max_attempts: int = Field(default=3)
     title_truncation_length: int = Field(default=50)
+
+    # ── Thread Cleanup ──────────────────────────────────────────────────────
+    thread_expiry_days: int = Field(
+        default=30,
+        ge=1,
+        description=(
+            "Inactivity window (days) after which a thread is eligible "
+            "for hard deletion by the nightly ``cleanup_expired_threads`` "
+            "sweep (FR-018).  Lower this in dev to exercise the sweep "
+            "without waiting weeks."
+        ),
+    )
 
     # ── Rate Limiting ───────────────────────────────────────────────────────
     rate_limit_chat: str = Field(default="20/minute")

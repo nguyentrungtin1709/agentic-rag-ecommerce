@@ -1,9 +1,21 @@
 # Use Case Analysis — Agentic RAG Ecommerce
 
 **Project**: `agentic-rag-ecommerce` — AI POD Stylist & Recommendation System
-- **Version**: 1.0
-- **Date**: 2026-05-31
-- **Status**: Confirmed — Based on Phase 1 & 2 review (TEMP.md, all 22 items confirmed)
+- **Version**: 2.1
+- **Date**: 2026-06-11
+- **Status**: Confirmed — use case catalogue aligned with the multi-agent
+  architecture (DRAFT 0.6) and the implementation plan
+- **Last revised**: UC-001 main flow expanded to include
+  `SummarizeNode`, all six `OrchestratorNode` intents, and the
+  three-stage `run_product_rag` pipeline (Phases 2–4 actual
+  implementation in `src/app/agent/`).
+
+> **Scope of this document** — actors, use cases, and high-level flows (WHAT
+> the system does for each user, not HOW it is built).  For node designs,
+> state shape, and the orchestrator's six intent values see
+> [docs/analysis/04-MULTI-AGENT-ARCHITECTURE-DESIGN.md](04-MULTI-AGENT-ARCHITECTURE-DESIGN.md).
+> For phase status, audit, and test plans see
+> [docs/analysis/05-IMPLEMENTATION-PLAN.md](05-IMPLEMENTATION-PLAN.md).
 
 ---
 
@@ -55,7 +67,7 @@ for the Print-on-Demand (POD) industry. It acts as an intelligent consultant tha
 | A-09 | Valkey | External System | Redis-compatible cache and rate limiting backend; DB `/0` for SlowAPI rate limiting, DB `/1` for fastapi-cache2 response caching |
 | A-10 | AWS S3 | External System | Object storage for generated design images; public URLs with thread-based lifecycle |
 | A-11 | RabbitMQ | External System | Message broker for Celery async task queue (webhook processing, product reindex, thread cleanup) |
-| A-12 | LangSmith | External System | LLM/agent observability; receives LangGraph traces and LlamaIndex spans via OpenInference OTel bridge |
+| A-12 | LangSmith | External System | LLM/agent observability; receives LangGraph traces and LlamaIndex spans via OpenInference OTel bridge.  Tracing toggle: `LANGSMITH_TRACING` env var (boolean). |
 
 ### 2.3 Customer Personas
 
@@ -99,6 +111,21 @@ for the Print-on-Demand (POD) industry. It acts as an intelligent consultant tha
 - **UC-005, UC-006, UC-007, UC-008** include **UC-S01**.
 - **UC-009, UC-010, UC-011** include **UC-S04**.
 
+### 3.3 Intent-to-Node Mapping
+
+The orchestrator's six intent values (defined in
+[04-MULTI-AGENT-ARCHITECTURE-DESIGN.md §2.1](04-MULTI-AGENT-ARCHITECTURE-DESIGN.md))
+map onto the use cases as follows:
+
+| Orchestrator intent value | Triggered use case branch | Next node |
+|---|---|---|
+| `need_product_search` | UC-001, UC-003 | `run_product_rag` |
+| `need_trend_info` | UC-002, UC-003 | `run_trend_scout` |
+| `sufficient` | All (terminal) | `synthesize` |
+| `clarification_needed` | All (alternative flow) | `synthesize` |
+| `out_of_scope` | All (alternative flow) | `synthesize` |
+| `fallback` | All (forced when step budget low) | `synthesize` |
+
 ---
 
 ## 4. Detailed Use Case Descriptions
@@ -115,79 +142,236 @@ for the Print-on-Demand (POD) industry. It acts as an intelligent consultant tha
 | **Secondary Actors** | OpenAI (A-04), Qdrant (A-07), PostgreSQL (A-08), AWS S3 (A-10) |
 | **Priority** | Must Have |
 | **API Trigger** | `POST /api/v1/threads/{thread_id}/runs/stream` |
+| **Implements FRs** | FR-001..FR-005, FR-027..FR-032, FR-033..FR-040, FR-055..FR-067, FR-068..FR-072, FR-081..FR-089 |
+| **Internal graph** | `START → profiler → summarize → orchestrate → (run_product_rag ⇆ orchestrate)* → synthesize → END` (with `generate_title` parallel branch and `generate_image` parallel branch) |
 
 **Description**
 The customer sends a natural language message expressing product needs (style preference,
 occasion, recipient, budget, product type) within an existing thread. The system analyzes
-context, performs hybrid search on the product catalog, and streams a personalized ranked
-recommendation list. If `generate_image: true` is set and trigger conditions are met, the
-system also generates a design image via DALL-E.
+context, performs a 3-stage hybrid retrieval (LLM query prep → Qdrant dense+sparse search →
+LLM rerank) on the product catalog, and streams a personalized ranked recommendation list.
+If `generate_image: true` is set and trigger conditions are met, the system also generates
+a design image via DALL-E.
 
 **Preconditions**
 1. Customer has a valid Saleor JWT (Bearer token).
 2. A thread has been explicitly created via `POST /api/v1/threads`.
 3. Thread is in `idle` status (not `busy` or `deleting`).
 4. Qdrant contains indexed product vectors (at least one full reindex completed).
+5. The parent LangGraph graph `profiler → summarize → orchestrate` is compiled
+   with `AsyncPostgresSaver` (checkpointer) and `AsyncPostgresStore` (profile store).
 
 **Main Flow**
+
 1. Customer sends `POST /api/v1/threads/{thread_id}/runs/stream` with
    `Authorization: Bearer {saleor_jwt}` and body `{message, generate_image: bool}`.
 2. System verifies JWT signature via cached JWKS (UC-S01); extracts `user_id` and `is_staff`.
 3. System checks thread status — if `busy` returns 409 Conflict; if `deleting` returns 404.
 4. System sets thread to `busy` status and updates `last_activity_at`.
-5. System loads `AgentState` from LangGraph checkpointer (UC-S02).
-6. **TitleGenerationNode** (first run only, parallel branch):
-   - Checks `thread.title_generated == false`.
-   - Calls LLM (`TITLE_MODEL`) with `first_user_message` to generate a short title (max 6 words).
+5. System loads `AgentState` from the LangGraph checkpointer (UC-S02); populates
+   `correlation_id`, `user_id`, `thread_id`, and `first_user_message` at the API boundary.
+6. **TitleGenerationNode** (parallel branch, runs on every turn but no-ops when
+   `title_generated == true`):
+   - On the first turn only: calls LLM (`TITLE_MODEL`) with `first_user_message` to
+     generate a short title (max 6 words).
    - Retries up to `TITLE_GENERATION_MAX_ATTEMPTS` times on failure.
-   - On final failure: truncates `first_user_message` to `TITLE_TRUNCATION_LENGTH` as fallback.
+   - On final failure: truncates `first_user_message` to `TITLE_TRUNCATION_LENGTH`
+     as fallback.
    - Persists title to `threads` table, sets `title_generated = true`.
    - Emits `thread_title` SSE event immediately (does not wait for Response Generator).
-7. **Profiler Node**: calls OpenAI with `{current_profile_json, latest_user_message}`;
-   extracts updated style attributes; writes updated profile to LangGraph Store (UC-S03).
-8. **Orchestrator Node**: reads `config["remaining_steps"]`; if
-   `remaining_steps <= AGENT_FALLBACK_THRESHOLD` forces intent to `fallback`; otherwise
-   classifies intent: `sufficient / clarification_needed / out_of_scope / fallback`.
-9. **Product RAG Node** (if intent requires product search):
-   - Formulates optimized English search query from profile + message.
-   - Executes hybrid Qdrant search (dense semantic + sparse BM25 + metadata filter).
-   - Stores top-k results in `AgentState.retrieved_products`.
-   - Routes back to Orchestrator for re-evaluation.
-10. Orchestrator re-evaluates; routes to Response Generator when intent is `sufficient`.
-11. **Response Generator Node**: synthesizes profile + retrieved products into a personalized
-    response; streams via SSE (`token` events for text, `products` event for product cards).
-12. **Image Generation Node** (parallel, if `generate_image: true` and conditions met):
-    - Synthesizes image prompt from trend summary and/or user description.
-    - Calls OpenAI DALL-E API to generate image.
-    - Uploads image to AWS S3 (`images/{user_id}/{thread_id}/{timestamp}.png`).
-    - Inserts record into `generated_images` (`request_message_id = HumanMessage.id`).
-    - Emits `image_ready` SSE event with public S3 URL.
-13. LangGraph checkpointer auto-saves `AgentState` including all messages (UC-S05).
-14. Thread status set back to `idle`.
-15. `done` SSE event emitted with `{run_id, thread_id, intent, usage: {prompt_tokens, completion_tokens, cost_usd}}`.
+   - Invalidates the `threads:{user_id}:*` cache.
+7. **ProfilerNode** (per the actual implementation in
+   `src/app/agent/nodes/profiler.py`, Phase 2):
+   - Loads existing profile from `AsyncPostgresStore` under namespace
+     `("profiles", user_id)`, key `"profile"`; defaults to `UserProfile()` when absent.
+   - Scans `state["messages"]` in reverse for the latest `HumanMessage`; returns
+     `{}` (no-op) when no human message is present.
+   - Calls LLM (`SUMMARIZE_MODEL`) with `.with_structured_output(UserProfile)` and a
+     two-field payload only: `current_profile` (JSON) + `latest_message`.  Full
+     conversation history is NEVER passed (FR-028).
+   - Persists the merged profile via `store.aput` and writes
+     `user_profile` into `AgentState` (UC-S03).
+8. **SummarizeNode** (per the actual implementation in
+   `src/app/agent/nodes/summarize.py`, Phase 2):
+   - Returns `{}` (no-op) when `len(messages) < MESSAGE_SUMMARIZE_THRESHOLD`
+     (default 12).  Otherwise:
+   - Sets initial cut to `MESSAGE_SUMMARIZE_COUNT` (default 8) and walks the
+     boundary backward until `messages[cut]` is a `HumanMessage` (boundary
+     alignment — never splits a Human/AI exchange pair).
+   - Builds a "extend" or "new" summary instruction based on whether
+     `state["summary"]` is already non-empty.
+   - Calls LLM (`SUMMARIZE_MODEL`) with
+     `[SystemMessage, *messages_to_summarize, HumanMessage(instruction)]`.
+   - Issues `RemoveMessage` delete ops for the summarized slice and writes
+     the new `summary` into `AgentState`.
+9. **OrchestratorNode** (per the actual implementation in
+   `src/app/agent/nodes/orchestrate.py`, Phase 3):
+   - **Step-budget guard**: reads
+     `config["configurable"]["remaining_steps"]`; if
+     `remaining_steps <= AGENT_FALLBACK_THRESHOLD` (default 2) returns
+     `{"intent": "fallback"}` immediately, without making an LLM call.
+   - Binds the `update_intent` `@tool` to a `ChatOpenAI(model=ORCHESTRATOR_MODEL)`.
+   - Assembles messages locally: `[SystemMessage(orchestrator_system), *state["messages"]]`
+     plus optional `HumanMessage` context notes (as LOCAL variables — NEVER
+     returned in the state update) about already-retrieved products
+     (one line per product: `Name | Category | Price`) and any existing
+     `trend_summary` text.  This invariant prevents context notes from
+     accumulating on every loop iteration.
+   - Forwards `correlation_id` to the LLM call via
+     `config["metadata"]["correlation_id"]` (NFR-021, LangSmith trace linkage).
+   - Invokes the LLM and extracts the chosen intent from the `update_intent`
+     tool call via `_extract_intent` (falls back to `"fallback"` on any
+     extraction failure).
+   - **Classifies intent into one of six values**:
+     - `need_product_search`  — needs to call `run_product_rag`
+     - `need_trend_info`      — needs to call `run_trend_scout`
+     - `sufficient`           — terminal; route to `synthesize`
+     - `clarification_needed` — terminal; route to `synthesize`
+     - `out_of_scope`         — terminal; route to `synthesize`
+     - `fallback`             — terminal; route to `synthesize` (forced when
+       step budget is low)
+   - Returns `{"intent": <value>}` ONLY.  The node never returns a
+     `"messages"` key (CRITICAL invariant enforced by
+     `test_orchestrate_does_not_mutate_state_messages`).
+10. **Conditional routing** (handled by `route_orchestrate` in `graph.py`):
+    - `need_product_search` → `run_product_rag`
+    - `need_trend_info`     → `run_trend_scout`
+    - the four terminal intents → `synthesize`
+11. **run_product_rag** (the `ProductRAGAgent` subgraph, per the actual implementation in
+    `src/app/agent/subagents/product_rag/`, Phase 4) runs the fixed
+    **3-stage `StateGraph(ProductRAGState)` pipeline**:
+    - The wrapper node `run_product_rag` translates parent `AgentState` into
+      a sub-state (`messages`, `correlation_id`, `summary`, `user_profile`),
+      forwards the shared `AsyncQdrantClient` via
+      `config["configurable"]["qdrant_aclient"]` when present, and maps
+      the resulting `retrieved_products` back to the parent.
+    - **Stage 1 — `prepare_query_node`**:
+      - Composes a `SystemMessage` from `load_prompt("prepare_query_system")`
+        + injected `## Conversation Summary` and `## User Profile` sections
+        (omitted when the corresponding context is empty).
+      - Unpacks `state["messages"]` as the `HumanMessage`(s) of the LLM call.
+      - Calls `ChatOpenAI(model=ORCHESTRATOR_MODEL).with_structured_output(PrepareQueryOutput)`.
+      - Extracts a clean English `query` (category / style / collection intent
+        embedded in the query text per DRAFT 0.6 §2.3 Option B) plus
+        optional metadata filters `{available: True, price_max: float}`.
+      - `prepare_query` error handler falls back to the most recent
+        `HumanMessage` content as the search query, with filters dropped.
+    - **Stage 2 — `hybrid_search_node`**:
+      - Builds a `QdrantVectorStore(enable_hybrid=True,
+        fastembed_sparse_model="Qdrant/bm25", dense_vector_name="text-dense",
+        sparse_vector_name="text-sparse")` (vector names match the Qdrant
+        collection created by `qdrant_service.py`).
+      - Embeds the query, runs `aquery(mode=HYBRID,
+        similarity_top_k=QDRANT_SIMILARITY_TOP_K=12, sparse_top_k=QDRANT_SPARSE_TOP_K=12,
+        hybrid_top_k=QDRANT_HYBRID_TOP_K=9)`, then fuses results via
+        Relative Score Fusion (the LlamaIndex QdrantVectorStore default).
+      - Translates `filters` into a Qdrant `Filter` — only `available == true`
+        and `price_max <= budget` are filtered; category / collections
+        ride the query text.
+      - Stores the fused candidate payloads under
+        `ProductRAGState.candidates`.  The
+        `hybrid_search` error handler returns `candidates=[]` so the
+        pipeline continues to rerank (which short-circuits to no products).
+    - **Stage 3 — `llm_postprocess_node`**:
+      - Composes a `SystemMessage` from `load_prompt("rerank_system")` +
+        injected `## Conversation Summary` and `## User Profile` sections.
+      - Puts the rewritten search `query` + the formatted candidate list
+        in a single `HumanMessage`.  Raw conversation history is
+        intentionally NOT forwarded (the rewritten query already encodes
+        the resolved intent).
+      - Calls `ChatOpenAI(model=RERANK_MODEL).with_structured_output(list[str])`.
+      - Maps the returned product IDs back to the original
+        `ProductPayload` dicts (description, slug, price_min, price_max,
+        currency, price_range, collections, thumbnail_url, saleor_url)
+        and caps the result at `QDRANT_RERANK_TOP_K` (default 3).
+      - The `llm_postprocess` error handler falls back to the top-K
+        candidates by raw Qdrant score order.
+    - Shared LangGraph fault tolerance (`set_node_defaults` on the
+      builder): `RetryPolicy(max_attempts=3, retry_on=default_retry_on)`
+      for `ConnectionError` / `TimeoutError` / httpx 5xx, plus
+      `TimeoutPolicy(run_timeout=60, idle_timeout=30)`.
+    - Subgraph checkpointer: `checkpointer=None` (per-invocation).  The
+      subgraph is compiled once at module import as
+      `_PRODUCT_RAG_GRAPH` and reused for every call.
+12. The parent graph wires `run_product_rag` back to `orchestrate` for
+    re-evaluation.  Steps 9–11 may iterate 2–4 times per turn (e.g. product
+    search first, then trend search on the next loop).
+13. **Synthesize / ResponseGeneratorNode** (when orchestrator intent is
+    `sufficient | clarification_needed | out_of_scope | fallback`):
+    - Injects `user_profile`, `retrieved_products`, `trend_summary`, and
+      `summary` into the system prompt.
+    - Calls LLM (`RESPONSE_MODEL`) and streams tokens via SSE.
+    - Emits a `products` SSE event block (after intro text, before
+      follow-up text) when `retrieved_products` is non-empty.
+    - Emits `done` with `{run_id, thread_id, intent, usage}` at the end.
+14. **ImageGenerationNode** (parallel branch from `synthesize`, when
+    `generate_image: true` and trigger conditions are met):
+    - Checks Valkey quota counter `image_quota:{user_id}:{YYYY-MM-DD}`
+      against `IMAGE_DAILY_LIMIT`.
+    - Synthesizes DALL-E prompt from `AgentState.image_prompt` (set by
+      TrendScout) or the user description.
+    - Calls OpenAI DALL-E API, uploads result to AWS S3 at
+      `images/{user_id}/{thread_id}/{timestamp}.png` (public URL).
+    - Inserts a record into `generated_images` with
+      `request_message_id = HumanMessage.id` of the current turn.
+    - Emits `image_ready` SSE event with `{url, prompt}` (or
+      `image_failed {reason}` on quota / generation failure).
+15. LangGraph `AsyncPostgresSaver` auto-saves the full `AgentState`
+    (including all `HumanMessage` and `AIMessage` objects with their
+    UUIDs) after each node (UC-S05).
+16. Thread status set back to `idle`.
+17. SSE connection closed after `done` event.
 
 **Alternative Flows**
-- **9a** — No matching products found: Orchestrator routes to Response Generator with
-  "no-results" context.
-- **8a** — Intent `clarification_needed`: Response Generator asks a clarifying question.
-- **8b** — Intent `out_of_scope`: Response Generator declines politely (not POD-related).
-- **8c** — Intent `fallback`: Response Generator produces best-effort response from all
-  data collected so far in `AgentState`, acknowledges results may be incomplete.
-- **12a** — Image rate limit exceeded (`IMAGE_DAILY_LIMIT`): emits `image_failed` with
-  `reason: "rate_limit_exceeded"`; text response is not affected.
-- **12b** — Image generation API error: emits `image_failed` with `reason: "generation_failed"`.
+- **9a** — Orchestrator forces `intent = "fallback"` because the step
+  budget is exhausted: Response Generator runs with whatever data has
+  accumulated in `AgentState` so far and acknowledges the result may be
+  incomplete.
+- **9b** — Intent `clarification_needed`: Response Generator asks a
+  focused clarifying question before any product search.
+- **9c** — Intent `out_of_scope`: Response Generator declines politely
+  (the request falls outside the POD fashion domain boundary).
+- **9d** — Intent `need_trend_info` (this turn also requires a trend
+  lookup — UC-003 territory): orchestrator loops to `run_trend_scout`
+  after `run_product_rag` returns; the next orchestration re-evaluates
+  and routes to `synthesize` once both are populated.
+- **11a** — `prepare_query_node` fails after retries: fallback query is
+  the latest `HumanMessage` content (no metadata filters).
+- **11b** — `hybrid_search_node` fails after retries: `candidates = []`;
+  rerank stage short-circuits and the orchestrator proceeds with
+  `retrieved_products = []` (typically routes to `clarification_needed`
+  or `out_of_scope` on the next re-evaluation).
+- **11c** — `llm_postprocess_node` fails after retries: top-K candidates
+  are returned in raw Qdrant score order.
+- **11d** — No matching products found: `retrieved_products = []` and
+  the orchestrator routes to `synthesize` with "no-results" context.
+- **14a** — Image rate limit exceeded (`IMAGE_DAILY_LIMIT`): emits
+  `image_failed {reason: "rate_limit_exceeded"}`; the text response is
+  unaffected.
+- **14b** — Image generation API error: emits
+  `image_failed {reason: "generation_failed"}`.
 
 **Exception Flows**
-- **E1** — Qdrant unavailable: system returns `error` SSE event; logs error.
-- **E2** — OpenAI timeout: retries up to 3 times with exponential backoff; returns `error` SSE
-  event on final failure.
-- **E3** — Thread not found or belongs to another user: 404 Not Found / 403 Forbidden.
+- **E1** — Qdrant unavailable (after retries): `error` SSE event;
+  structured log with `correlation_id`.
+- **E2** — OpenAI timeout (orchestrator / prepare_query / rerank / synthesize):
+  LangGraph `RetryPolicy` retries up to 3 times; on final failure the
+  parent turn fails to `error` SSE.
+- **E3** — Thread not found or belongs to another user: 404 / 403.
+- **E4** — Orchestrator LLM emits no `update_intent` tool call: defensive
+  `_extract_intent` returns `"fallback"`; turn continues to `synthesize`
+  with whatever data was previously accumulated.
 
 **Postconditions**
-- `AgentState` with full message history persisted in LangGraph checkpointer.
-- Customer profile updated in LangGraph Store.
+- `AgentState` with full message history (minus summarized slice) and
+  accumulated `summary` persisted in LangGraph checkpointer.
+- Customer profile updated in LangGraph Store (cross-thread, namespace
+  `("profiles", user_id)`).
 - Thread `last_activity_at` updated; thread title set (first run only).
-- If image generated: S3 object uploaded, `generated_images` record inserted.
+- `retrieved_products` populated with at most `QDRANT_RERANK_TOP_K=3`
+  `ProductPayload` dicts (or empty).
+- If image generated: S3 object uploaded, `generated_images` record
+  inserted.
 - All SSE events delivered; connection closed after `done` event.
 
 ---
@@ -209,23 +393,39 @@ searches the web in real time, summarizes findings, and generates text-to-image 
 suggestions. Optionally generates a design image if `generate_image: true`.
 
 **Main Flow**
-1. Same as UC-001 steps 1.
-2. Same as UC-001 steps 2.
-3. Same as UC-001 steps 3.
-4. Same as UC-001 steps 4.
-5. Same as UC-001 steps 5.
-6. TitleGenerationNode (first run only, parallel) — same as UC-001 step 6.
-7. **Profiler Node**: updates profile with detected trend topic interest.
-8. **Orchestrator Node**: classifies intent as trend search.
-9. **Trend Scout Node**: formulates optimized web search query; calls Tavily API
-   (fallback: DuckDuckGo); summarizes top design themes; generates 3-5 text-to-image
-   prompt suggestions; stores result in `AgentState.trend_summary`.
-10. Orchestrator re-evaluates — `sufficient` — routes to Response Generator.
-11. **Response Generator Node**: synthesizes trend summary + prompt suggestions into response.
-12. Same as UC-001 steps 12.
-13. Same as UC-001 steps 13.
-14. Same as UC-001 steps 14.
-15. Same as UC-001 steps 15.
+1. Same as UC-001 steps 1–5.
+2. **TitleGenerationNode** (parallel branch) — same as UC-001 step 6.
+3. **ProfilerNode** — same as UC-001 step 7.
+4. **SummarizeNode** — same as UC-001 step 8.
+5. **OrchestratorNode**: step-budget guard + `update_intent` tool call
+   (same as UC-001 step 9) classifies the intent as `need_trend_info`.
+6. **Conditional routing** routes the intent to `run_trend_scout`.
+7. **run_trend_scout** (the `TrendScoutNode`, per the actual implementation in
+   `src/app/agent/nodes/trend_scout.py`, Phase 5 — currently stubbed):
+   - Built with `langchain.agents.create_agent` as a ReAct loop with the
+     `ORCHESTRATOR_MODEL` and toolset `[tavily_search, duckduckgo_search]`.
+   - Composes a `SystemMessage` that includes
+     `## Conversation Summary` + `## User Profile` +
+     `## Retrieved Products` sections (each omitted when empty).
+   - When the run is part of UC-003, `retrieved_products` is already
+     populated — the system prompt explicitly lists them so the trend
+     research can target those product categories.
+   - Tavily is the primary search tool; DuckDuckGo is the fallback.
+   - Returns a `TrendScoutOutput` with two fields:
+     - `trend_summary` (str): 2–3 sentence trend report, written into
+       `AgentState.trend_summary`.
+     - `image_prompt` (str | None): **at most one** text-to-image prompt
+       (DRAFT 0.6 §2.2), written into `AgentState.image_prompt`.  The
+       prompt is a **separate** state field — it is NOT embedded inside
+       `trend_summary`.
+8. The parent graph wires `run_trend_scout` back to `orchestrate` for
+   re-evaluation.  Orchestrator returns `sufficient` (step-budget guard
+   permitting) and routes to `synthesize`.
+9. **Synthesize / ResponseGeneratorNode** — same as UC-001 step 13.
+10. **ImageGenerationNode** (parallel branch) — same as UC-001 step 14.
+11. LangGraph checkpointer auto-saves `AgentState` — same as UC-001 step 15.
+12. Thread status set back to `idle` — same as UC-001 step 16.
+13. SSE connection closed after `done` event — same as UC-001 step 17.
 
 **Alternative Flows**
 - **9a** — Tavily unavailable: fall back to DuckDuckGo.
@@ -233,7 +433,10 @@ suggestions. Optionally generates a design image if `generate_image: true`.
   broader search terms.
 
 **Postconditions**
-- `AgentState.trend_summary` populated.
+- `AgentState.trend_summary` populated (2–3 sentence trend report).
+- `AgentState.image_prompt` set to **at most one** prompt (or `None` if the
+  trend report did not warrant an image).  The text-to-image prompt is a
+  **separate** state field — it is NOT embedded inside `trend_summary`.
 - Customer profile updated.
 - Optional design image generated and stored in S3.
 
@@ -255,25 +458,33 @@ Extends UC-001 and UC-002. The Orchestrator drives both Product RAG and Trend Sc
 routing to Response Generator, delivering a unified product + design recommendation.
 
 **Main Flow**
-1. Same as UC-001 steps 1.
-2. Same as UC-001 steps 2.
-3. Same as UC-001 steps 3.
-4. Same as UC-001 steps 4.
-5. Same as UC-001 steps 5.
-6. Same as UC-001 steps 6.
-7. Same as UC-001 steps 7.
-8. Same as UC-001 steps 8.
-9. **Orchestrator Node**: classifies that both product search AND trend search are needed.
-10. **Product RAG Node**: executes hybrid search; stores `retrieved_products`; returns to Orchestrator.
-11. **Orchestrator Node**: re-evaluates — trend search still needed.
-12. **Trend Scout Node**: executes web search; stores `trend_summary`; returns to Orchestrator.
-13. **Orchestrator Node**: re-evaluates — `sufficient` — routes to Response Generator.
-14. **Response Generator Node**: synthesizes products + design trends; pairs each product
-    with matching design concepts.
-15. Same as UC-001 steps 12.
-16. Same as UC-001 steps 13.
-17. Same as UC-001 steps 14.
-18. Same as UC-001 steps 15.
+1. Same as UC-001 steps 1–5 (request, JWT verify, status check, busy,
+   load AgentState).
+2. **TitleGenerationNode** (parallel branch) — same as UC-001 step 6.
+3. **ProfilerNode** — same as UC-001 step 7.
+4. **SummarizeNode** — same as UC-001 step 8.
+5. **OrchestratorNode** (same as UC-001 step 9): step-budget guard +
+   `update_intent` tool call classifies the intent as `need_product_search`.
+6. **run_product_rag** (3-stage pipeline) — same as UC-001 step 11.
+   Stores `retrieved_products` and returns to Orchestrator.
+7. **OrchestratorNode** (re-evaluated loop): with products in hand, the
+   LLM next classifies the intent as `need_trend_info` and the
+   `route_orchestrate` edge routes the request to `run_trend_scout`.
+8. **run_trend_scout** — same as UC-002 step 7, with the system prompt
+   `## Retrieved Products` section now non-empty so the trend research
+   targets the categories the user actually asked about.
+9. **OrchestratorNode** (re-evaluated loop): with both
+   `retrieved_products` and `trend_summary` populated, the LLM
+   classifies the intent as `sufficient` and routes to `synthesize`.
+10. **Synthesize / ResponseGeneratorNode**: synthesizes products +
+    design trends; pairs each product with matching design concepts.
+    Emits a `products` SSE event block plus streamed text via
+    `RESPONSE_MODEL` — same as UC-001 step 13.
+11. **ImageGenerationNode** (parallel branch) — same as UC-001 step 14.
+12. LangGraph checkpointer auto-saves `AgentState` — same as UC-001
+    step 15.
+13. Thread status set back to `idle` — same as UC-001 step 16.
+14. SSE connection closed after `done` event — same as UC-001 step 17.
 
 **Postconditions**
 - Both `AgentState.retrieved_products` and `AgentState.trend_summary` populated.
@@ -461,7 +672,7 @@ enqueues a Celery task to generate the embedding and index it in Qdrant, and ret
 2. `SALEOR_WEBHOOK_SECRET` is configured in the system environment.
 
 **Main Flow**
-1. Saleor sends `POST /webhooks/saleor` with `X-Saleor-Signature` header and JSON body
+1. Saleor sends `POST /webhooks/saleor` with `Saleor-Signature` header and JSON body
    `{event_type: "PRODUCT_CREATED", product: {...}}`.
 2. System validates HMAC-SHA256 signature using `SALEOR_WEBHOOK_SECRET` (UC-S04).
 3. System enqueues `process_webhook` Celery task with payload on `webhook` queue.
@@ -579,7 +790,7 @@ snapshot is the compressed representation of all prior long-term preferences.
 ### UC-S04: Validate Webhook HMAC Signature
 
 System computes `HMAC-SHA256(request_body, SALEOR_WEBHOOK_SECRET)` and compares it to the
-value in the `X-Saleor-Signature` header using a constant-time comparison to prevent timing
+value in the `Saleor-Signature` header using a constant-time comparison to prevent timing
 attacks. Any mismatch results in an immediate `401 Unauthorized`.
 
 ### UC-S05: Persist Agent State
@@ -601,5 +812,43 @@ All open questions from the initial draft have been resolved:
 | Q2 | What is the session TTL? | Threads expire after 30 days of inactivity (`last_activity_at`); cleaned by Celery Beat scheduled task (nightly at 2:00 AM) |
 | Q3 | Should the reindex endpoint be synchronous or asynchronous? | Async — returns `202 Accepted`, Celery worker processes in background |
 | Q4 | How to handle partial Saleor outages during webhook processing? | Celery retry with exponential backoff; failed webhooks retried automatically |
-| Q5 | Is text-to-image prompt generation an MVP requirement? | Yes — `AgentState.trend_summary` includes prompt suggestions; image generation (DALL-E) is SHOULD priority |
+| Q5 | Is text-to-image prompt generation an MVP requirement? | Yes — the Trend Scout produces **at most one** text-to-image prompt and stores it in a separate `AgentState.image_prompt` field (it is NOT embedded in `trend_summary`); image generation (DALL-E) is SHOULD priority |
 | Q6 | What is the max agent iteration limit? | `MAX_AGENT_STEPS` env var maps to LangGraph `recursion_limit`; graceful fallback via `AGENT_FALLBACK_THRESHOLD` (not a hard error) |
+| Q7 | How many Orchestrator intents are there? | Six: `need_product_search`, `need_trend_info`, `sufficient`, `clarification_needed`, `out_of_scope`, `fallback` (the last two only trigger `synthesize`; `fallback` is also forced when the step budget is low) |
+
+---
+
+## 7. Cross-References
+
+The Main Flow steps in this document describe **WHAT** the system does.
+For the matching **HOW** (node designs, prompts, state shape, error
+handlers) refer to the design and implementation ground truth:
+
+- **Architecture design** —
+  [04-MULTI-AGENT-ARCHITECTURE-DESIGN.md](04-MULTI-AGENT-ARCHITECTURE-DESIGN.md)
+  - §1.3 Parent Graph Topology — `profiler → summarize → orchestrate` edge
+    order and parallel `generate_title` / `generate_image` branches.
+  - §2.1 OrchestratorNode — the six-intent `update_intent` tool, the
+    step-budget guard (`AGENT_FALLBACK_THRESHOLD`), and the local
+    context-note pattern.
+  - §2.2 TrendScoutNode — LangChain `create_agent` ReAct loop with
+    `TrendScoutOutput(trend_summary, image_prompt)`.
+  - §2.3 ProductRAGAgent — 3-stage `StateGraph` pipeline
+    (prepare_query → hybrid_search → llm_postprocess).
+  - §2.4 ProfilerNode — `SUMMARIZE_MODEL`, two-field payload
+    (current_profile + latest_message).
+- **Phase tracking** (chronological log of what was actually built):
+  - [temp/phase-2-profile-and-memory-management.md](../../temp/phase-2-profile-and-memory-management.md)
+    — `ProfilerNode` and `SummarizeNode` actual implementation
+    (Phases 2.4 and 2.5).
+  - [temp/phase-3-orchestration.md](../../temp/phase-3-orchestration.md)
+    — `OrchestratorNode` actual implementation, including the
+    `test_orchestrate_does_not_mutate_state_messages` invariant.
+  - [temp/phase-4-product-rag.md](../../temp/phase-4-product-rag.md)
+    — `ProductRAGAgent` 3-stage pipeline, fault tolerance, Qdrant
+    vector names (`text-dense` / `text-sparse`), and the four
+    `QDRANT_*_TOP_K` env vars.
+- **Master plan** —
+  [docs/analysis/05-IMPLEMENTATION-PLAN.md](05-IMPLEMENTATION-PLAN.md)
+  — phase status (Phases 1–4 DONE; 5–14 PENDING), audit notes, test
+  plans, Definition of Done.

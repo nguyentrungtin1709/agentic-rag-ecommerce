@@ -18,7 +18,7 @@ class GeneratedImage(BaseModel):
         prompt: The prompt used to generate the image.
         s3_key: S3 object key (path within the bucket).
         s3_url: Public S3 URL of the image.
-        model: Model identifier used for generation (e.g. ``"dall-e-3"``).
+        model: Model identifier used for generation (e.g. ``"gpt-image-2"``).
         request_message_id: ``HumanMessage.id`` of the turn that triggered
             generation; links the image to the correct turn in thread
             history (FR-020, FR-051).  ``None`` for legacy records.
