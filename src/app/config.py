@@ -161,6 +161,41 @@ class Settings(BaseSettings):
     langsmith_api_key: str = Field(default="")
     langsmith_project: str = Field(default="agentic-rag-ecommerce")
     langsmith_endpoint: str = Field(default="https://aws.api.smith.langchain.com")
+    # OTLP HTTP/protobuf ingestion for the LlamaIndex OpenInference path.
+    # Distinct from ``langsmith_endpoint`` which targets the LangChain/LangGraph
+    # SDK auto-trace path (decision D6).
+    otel_exporter_otlp_endpoint: str = Field(
+        default="https://aws.api.smith.langchain.com/otel/v1/traces",
+        description=(
+            "OTLP HTTP/protobuf ingestion endpoint for LlamaIndex "
+            "OpenInference spans. Distinct from LANGSMITH_ENDPOINT which "
+            "is the SDK ingestion path for LangChain/LangGraph (D6)."
+        ),
+    )
+    otel_exporter_otlp_headers: str = Field(
+        default="",
+        description=(
+            "OTLP HTTP headers, comma-separated key=value pairs. "
+            "Built at startup as "
+            "'x-api-key=<LANGSMITH_API_KEY>,Langsmith-Project=<LANGSMITH_PROJECT>' "
+            "when empty."
+        ),
+    )
+    # OTel resource attributes (Phase 15, D6)
+    deployment_environment: str = Field(
+        default="development",
+        description=(
+            "OTel resource attribute deployment.environment. Surfaces "
+            "in LangSmith as a tag on every span."
+        ),
+    )
+    app_version: str = Field(
+        default="1.0.0",
+        description=(
+            "OTel resource attribute service.version. Pin to the "
+            "release tag; bumped at each release."
+        ),
+    )
 
     # ── Computed Properties ─────────────────────────────────────────────────
 

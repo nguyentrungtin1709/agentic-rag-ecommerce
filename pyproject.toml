@@ -53,6 +53,13 @@ dependencies = [
     # Observability
     "structlog==25.5.0",
     "prometheus-fastapi-instrumentator==8.0.0",
+    # OpenTelemetry (Phase 15, D6). Three of these were transitive via
+    # ``openinference-instrumentation-llama-index``; pinning makes them
+    # first-class so a future dep cleanup cannot silently drop them.
+    "opentelemetry-api>=1.42.0,<2.0",
+    "opentelemetry-sdk>=1.42.0,<2.0",
+    "opentelemetry-instrumentation>=0.63b1,<1.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.42.0,<2.0",
     # Core
     "pydantic==2.13.4",
     "pydantic-settings==2.14.1",

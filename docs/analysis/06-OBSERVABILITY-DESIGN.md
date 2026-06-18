@@ -1,9 +1,9 @@
 # Observability Design — AI POD Stylist
 
 **Project**: `agentic-rag-ecommerce` — AI POD Stylist & Recommendation System
-- **Version**: 1.0
-- **Date**: 2026-06-17
-- **Status**: Active — design locked, implementation tracked in [07-OBSERVABILITY-IMPLEMENTATION-PLAN.md](07-OBSERVABILITY-IMPLEMENTATION-PLAN.md)
+- **Version**: 1.1 (revised 2026-06-18 — single-path trace ingestion)
+- **Date**: 2026-06-17 (revised 2026-06-18)
+- **Status**: Active — Phase 1 (single-path LangSmith tracing) shipped; design revised to match. See [07 §2 D6](07-OBSERVABILITY-IMPLEMENTATION-PLAN.md) and [history/15_0_0_LANGSMITH_TRACING.md](../../history/15_0_0_LANGSMITH_TRACING.md) for the revision history.
 
 > **Scope of this document** — the architecture of the observability stack:
 > which components exist, what data they handle, how they communicate, and
@@ -63,7 +63,7 @@ The boundaries:
 |---|---|
 | Per-node LangGraph latency, retry counts | LangSmith (in the trace tree) |
 | Per-node LLM token usage, cost | LangSmith (run metadata) |
-| Retrieval query hit rate, top-k quality | LangSmith (OpenInference spans from LlamaIndex) |
+| Per-call LlamaIndex embedding / retrieval spans | LangSmith (single `LangGraph` run with prompts and metadata; per-call visibility NOT shipped in Phase 1) |
 | HTTP request rate, error rate, latency percentiles | Grafana (from `prometheus_fastapi_instrumentator`) |
 | Container CPU / memory | Grafana (from `cAdvisor` if added, or per-service metrics) |
 | Qdrant / Postgres / Valkey / RabbitMQ health | Grafana (Phase 3) |
@@ -79,7 +79,7 @@ The boundaries:
 | Component | File | Role |
 |---|---|---|
 | `configure_logging` | `src/app/observability/logging.py` | structlog JSON setup, context-var binding for `correlation_id` |
-| `configure_tracing` | `src/app/observability/tracing.py` | Builds the OTel `TracerProvider`, attaches the OTLP HTTP exporter, wires `LlamaIndexOpenInferenceInstrumentor` to the same provider |
+| `configure_tracing` | `src/app/observability/tracing.py` | Builds the OTel `TracerProvider` (idle — no instrumentor wired), attaches an OTLP HTTP exporter as a future-use hook, and writes the `LANGSMITH_*` env vars so the `langsmith` SDK auto-traces LangChain / LangGraph calls |
 | `instrumentator` | `src/app/main.py` (lifespan) | `prometheus_fastapi_instrumentator` mounted at `/metrics` for HTTP metrics |
 | structlog `bind_contextvars` | Every agent node | Binds `correlation_id`, `thread_id`, `user_id` to async context — every log line in that context is auto-tagged |
 | LangGraph `config["metadata"]` | `src/app/api/chat.py` | Forwards `correlation_id`, `thread_id`, `user_id` to every LangChain/LangGraph call — auto-traced by `langsmith` SDK |
@@ -104,10 +104,10 @@ External services with native Prometheus endpoints (no sidecar needed):
 
 ### 3.3 External / SaaS
 
-| Service | Endpoint | Auth |
-|---|---|---|
-| LangSmith SDK ingestion | `https://aws.api.smith.langchain.com` | `LANGSMITH_API_KEY` (env var, `lsv2_pt_*` personal key) |
-| LangSmith OTLP ingestion | `https://aws.api.smith.langchain.com/otel/v1/traces` | `x-api-key` header (same key), `Langsmith-Project` header |
+| Service | Endpoint | Auth | Status |
+|---|---|---|---|
+| LangSmith SDK ingestion | `https://aws.api.smith.langchain.com` | `LANGSMITH_API_KEY` (env var, `lsv2_pt_*` personal key) | **Active** (Phase 1) |
+| LangSmith OTLP ingestion | `https://aws.api.smith.langchain.com/otel/v1/traces` | `x-api-key` header (same key), `Langsmith-Project` header | **Wired but unused** (reserved for future OpenInference re-enable; OTel `TracerProvider` + `OTLPSpanExporter` are built and idle) |
 
 ---
 
@@ -143,7 +143,7 @@ flowchart LR
 
   subgraph SaaS["External SaaS"]
     LS_SDK[LangSmith SDK endpoint]
-    LS_OTLP[LangSmith OTLP endpoint]
+    LS_OTLP[LangSmith OTLP endpoint - reserved]
   end
 
   APP -.->|"structlog JSON to stdout"| ALLOY
@@ -152,7 +152,7 @@ flowchart LR
   ALLOY -->|"loki.write (HTTP)"| LOKI
 
   APP -->|"POST /runs (HTTP)"| LS_SDK
-  APP -->|"OTLP HTTP/protobuf"| LS_OTLP
+  APP -.->|"OTLP HTTP/protobuf (idle)"| LS_OTLP
   APP -->|"exposes /metrics"| ALLOY
   QDRANT -->|"exposes /metrics"| ALLOY
   POSTGRES -->|"via postgres-exporter"| ALLOY
@@ -164,7 +164,7 @@ flowchart LR
   GRAFANA -->|"PromQL"| PROM
 ```
 
-### 4.2 Trace Flow (Two Paths to LangSmith)
+### 4.2 Trace Flow (Single Path to LangSmith)
 
 ```mermaid
 flowchart TD
@@ -178,13 +178,14 @@ flowchart TD
   ALLOY -->|correlation_id as Loki label| LOKI[Query in Grafana: by correlation_id]
 
   LC -->|auto-traced by langsmith SDK| LS_SDK[LangSmith SDK endpoint]
-  LI -->|OpenInference spans| TRACER[OTel TracerProvider]
-  TRACER -->|OTLPSpanExporter HTTP/protobuf| LS_OTLP[LangSmith OTLP endpoint]
+  LI -.->|no span emitted| TRACER[OTel TracerProvider - idle]
+  TRACER -.->|reserved| LS_OTLP[LangSmith OTLP endpoint]
   LS_SDK -->|project: agentic-rag-ecommerce| LS[LangSmith project view]
-  LS_OTLP -->|project: agentic-rag-ecommerce| LS
 ```
 
-The two paths converge in the same LangSmith project. An operator inspecting a single `correlation_id` sees both: the LangChain orchestration tree (auto-traced) and the LlamaIndex retrieval/embedding spans (OpenInference) interleaved by timestamp.
+**Only the LangChain / LangGraph path is shipped in Phase 1** (single-path revision of D6, 2026-06-18). Every `chain.invoke()` / `graph.ainvoke()` call is auto-traced by the `langsmith` SDK because `LANGSMITH_TRACING=true` is set in the process environment at startup. LlamaIndex calls (embedding, retrieval, query engine) inside the subgraphs run with their normal return values but do **not** emit per-call spans to LangSmith in this phase — the operator sees the parent LangGraph run and its node-level metadata, but not individual `OpenAIEmbedding.aget_text_embedding` spans.
+
+The OTel `TracerProvider` + `OTLPSpanExporter` are still built and pointed at the LangSmith OTLP endpoint; they sit idle because no library-side instrumentor is wired. A future change that re-enables the OpenInference LlamaIndex path (or adds `FastAPIInstrumentor`, or emits custom spans via `trace.get_tracer(__name__).start_as_current_span(...)`) will route those spans to LangSmith automatically without code changes to `configure_tracing`.
 
 ### 4.3 Log Flow
 
@@ -236,8 +237,8 @@ After Phase 3, the standalone Prometheus has **no scrape jobs of its own** — i
 
 | Data | Source | Format | Storage | Retention |
 |---|---|---|---|---|
-| LLM spans (LangChain) | `langsmith` SDK auto-trace | Runs JSON | LangSmith SaaS | LangSmith plan default |
-| LLM spans (LlamaIndex) | OpenInference instrumentor | OTel spans | LangSmith OTLP ingestion | LangSmith plan default |
+| LLM spans (LangChain / LangGraph) | `langsmith` SDK auto-trace | Runs JSON | LangSmith SaaS | LangSmith plan default |
+| LLM spans (LlamaIndex) | — (NOT shipped in Phase 1) | — | — | — |
 | Per-request log trail | structlog + stdlib | JSON to stdout | Loki | 168h (7 days) configurable |
 | HTTP request metrics | `prometheus_fastapi_instrumentator` | Prometheus exposition | Prometheus | TSDB default (15 days) |
 | Qdrant vectors / search QPS | Qdrant native exporter | Prometheus exposition | Prometheus | TSDB default |
@@ -293,13 +294,15 @@ This is locked as decision D5 in [07-OBSERVABILITY-IMPLEMENTATION-PLAN.md §2](0
 
 ### 6.3 OpenTelemetry Resource Attributes
 
-`configure_tracing` sets three resource attributes on the global TracerProvider:
+`configure_tracing` sets three resource attributes on the global `TracerProvider`:
 
 - `service.name=agentic-rag-ecommerce`
-- `service.version=1.0.0` (read from `Settings.app_version` or a constant)
-- `deployment.environment=development` (or whatever value `LANGSMITH_PROJECT` is set to)
+- `service.version=1.0.0` (read from `Settings.app_version`)
+- `deployment.environment=development` (read from `Settings.deployment_environment`)
 
-These appear on every OTel span. LangSmith reads them and surfaces them in the trace tree — useful for filtering traces by environment when the same project receives dev + prod traces.
+These appear on every OTel span if/when one is emitted. LangSmith reads them and surfaces them in the trace tree — useful for filtering traces by environment when the same project receives dev + prod traces.
+
+**As of the 2026-06-18 revision (single-path), the `TracerProvider` is built but idle** — no library instrumentor is wired to emit spans. The OTel SDK + exporter are kept in place as a future-use hook: a `FastAPIInstrumentor`, a restored OpenInference wiring, or any custom `trace.get_tracer(__name__).start_as_current_span(...)` call will start flowing through to LangSmith without code changes to `configure_tracing`.
 
 ### 6.4 What Does NOT Go on the Observability Stack
 
@@ -319,7 +322,8 @@ A short list of things explicitly excluded (consistent with the project-wide "no
 | Symptom | First Check | Likely Cause |
 |---|---|---|
 | No traces in LangSmith | `echo $LANGSMITH_TRACING` in `app` container | Flag is `false` or `LANGSMITH_API_KEY` is missing/invalid |
-| No LlamaIndex spans in LangSmith (only LangChain ones) | OTel exporter error in app logs | `OTEL_EXPORTER_OTLP_ENDPOINT` set wrong, or `OTEL_EXPORTER_OTLP_HEADERS` missing `x-api-key` |
+| `LangGraph` run visible but node-level detail missing | Click into the run; expand child runs | The `langsmith` SDK auto-traces node-level runs by default — if they are collapsed, click the run row in the LangSmith UI |
+| Per-call LlamaIndex spans (e.g. `OpenAIEmbedding.aget_text_embedding`) not visible | Expected in Phase 1 (single-path revision) | Re-enable by restoring the OpenInference wiring in `configure_tracing` — see `history/15_0_0_LANGSMITH_TRACING.md` revision history |
 | No logs in Loki | `docker logs agentic-rag-alloy` | Alloy container down, or `loki.source.docker` relabel rules dropping the container |
 | No metrics in Grafana | `prometheus_targets` in Prometheus UI | Alloy scrape config error, or the target service is not exposing `/metrics` on the expected port |
 | Logs arrive but `correlation_id` filter returns nothing | `loki.process` stage config | JSON parse failed; check `loki.process` is parsing the structlog output format correctly |
