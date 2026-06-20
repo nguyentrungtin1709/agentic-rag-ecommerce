@@ -14,6 +14,7 @@ environment variables when running from within another container.
     SALEOR_TEST_URL     — default: http://localhost:8000
     APP_TEST_URL        — default: http://localhost:8080
     LOKI_TEST_URL       — default: http://localhost:3100
+    PROMETHEUS_TEST_URL — default: http://localhost:9090
 
 Test-user credentials live in ``.env.local`` (git-ignored) — see
 ``docs/SALEOR-APP-WEBHOOK-SETUP.md`` Step 6 for the full
@@ -47,6 +48,7 @@ VALKEY_URL: str = os.environ.get("VALKEY_TEST_URL", "redis://localhost:6380")
 SALEOR_URL: str = os.environ.get("SALEOR_TEST_URL", "http://localhost:8000")
 APP_URL: str = os.environ.get("APP_TEST_URL", "http://localhost:8080")
 LOKI_URL: str = os.environ.get("LOKI_TEST_URL", "http://localhost:3100")
+PROMETHEUS_URL: str = os.environ.get("PROMETHEUS_TEST_URL", "http://localhost:9090")
 
 # Test-user credentials — loaded from .env.local (git-ignored).  See the
 # module docstring for the full list of supported variables.  Fall back
@@ -135,6 +137,47 @@ def loki_ready(loki_url: str) -> str:
             "observability stack may be offline."
         )
     return loki_url
+
+
+# ---------------------------------------------------------------------------
+# Prometheus — Phase 17 metrics pipeline (D2, D7, D10; tactical D17.1-D17.9)
+# ---------------------------------------------------------------------------
+# The ``prometheus_ready`` fixture is intentionally function-scoped so each
+# test gets a fresh "is the observability stack up?" probe — by the time a
+# developer runs the integration suite the Prometheus + Alloy containers
+# may have been started minutes or hours earlier, so we don't want a
+# single stale session check to mask a torn-down stack.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def prometheus_url() -> str:
+    """Return the Prometheus base URL for integration tests."""
+    return PROMETHEUS_URL
+
+
+@pytest.fixture
+def prometheus_ready(prometheus_url: str) -> str:
+    """Return the Prometheus base URL when ``/-/ready`` returns 200, else skip.
+
+    Phase 17 ships the metrics pipeline as a default-ON observability stack,
+    but a developer may be running the app subset (postgres, app, qdrant)
+    without Prometheus + Alloy.  We skip the test with a clear message
+    rather than fail so a partial stack is still useful — same pattern as
+    ``loki_ready`` above.
+    """
+    import httpx
+
+    try:
+        response = httpx.get(f"{prometheus_url}/-/ready", timeout=2.0)
+    except httpx.HTTPError as exc:
+        pytest.skip(f"Prometheus not reachable at {prometheus_url}: {exc}")
+    if response.status_code != 200:
+        pytest.skip(
+            f"Prometheus at {prometheus_url} returned {response.status_code} "
+            "on /-/ready; observability stack may be offline."
+        )
+    return prometheus_url
 
 
 # ---------------------------------------------------------------------------

@@ -1,9 +1,9 @@
 # Observability Implementation Plan
 
 **Project**: `agentic-rag-ecommerce` — AI POD Stylist & Recommendation System
-- **Version**: 1.0
-- **Date**: 2026-06-17
-- **Status**: Active — decisions locked, Phase 1 ready to start
+- **Version**: 1.1
+- **Date**: 2026-06-17 (updated 2026-06-20)
+- **Status**: Active — Phase 1 (LangSmith tracing) shipped 2026-06-20, Phase 2 (log pipeline) shipped 2026-06-20, Phase 3 (metrics expansion) shipped 2026-06-20. Phase 4 (Grafana dashboards) ready to start.
 
 > **Scope of this document** — the phased rollout plan for the observability
 > stack. Locked decisions D1–D10, per-phase scope, files touched, task
@@ -55,12 +55,12 @@ Audit performed 2026-06-17, one line per pillar:
 
 ## 3. Phase Overview
 
-| # | Name | Solves | Visible Result | Depends On |
-|---|---|---|---|---|
-| 1 | LangSmith tracing | AI/RAG traces not visible anywhere | One chat turn produces a `LangGraph` root run in `smith.langchain.com` covering the orchestrator + every LangGraph node, with `correlation_id` on the root run metadata | — |
-| 2 | Log pipeline (Alloy) | App/celery logs never reach Loki | Grafana Explore → Loki → `{service="app"}` returns the latest chat-turn JSON logs filterable by `correlation_id` | — (independent of Phase 1) |
-| 3 | Metrics expansion (Alloy-scraped) | Only the FastAPI app is scraped; Prometheus owns all scraping | Alloy owns scraping via `prometheus.scrape` and `prometheus.remote_write` to Prometheus. Qdrant, Postgres, Valkey, RabbitMQ metrics visible in Grafana Explore | — (independent of Phase 1, 2) |
-| 4 | Grafana dashboards (non-AI focus) | Dashboards folder empty | Grafana home shows 4 provisioned JSON dashboards: System Overview, Infrastructure, Logs Explorer, Business Metrics. AI/agent observability lives in LangSmith, not in Grafana. | 2, 3 (depends on log and metric data being queryable) |
+| # | Name | Solves | Visible Result | Depends On | Status |
+|---|---|---|---|---|---|
+| 1 | LangSmith tracing | AI/RAG traces not visible anywhere | One chat turn produces a `LangGraph` root run in `smith.langchain.com` covering the orchestrator + every LangGraph node, with `correlation_id` on the root run metadata | — | SHIPPED 2026-06-20 |
+| 2 | Log pipeline (Alloy) | App/celery logs never reach Loki | Grafana Explore → Loki → `{service="app"}` returns the latest chat-turn JSON logs filterable by `correlation_id` | — (independent of Phase 1) | SHIPPED 2026-06-20 |
+| 3 | Metrics expansion (Alloy-scraped) | Only the FastAPI app is scraped; Prometheus owns all scraping | Alloy owns scraping via `prometheus.scrape` and `prometheus.remote_write` to Prometheus. Qdrant, Postgres, Valkey, RabbitMQ metrics visible in Grafana Explore | — (independent of Phase 1, 2) | SHIPPED 2026-06-20 |
+| 4 | Grafana dashboards (non-AI focus) | Dashboards folder empty | Grafana home shows 4 provisioned JSON dashboards: System Overview, Infrastructure, Logs Explorer, Business Metrics. AI/agent observability lives in LangSmith, not in Grafana. | 2, 3 (depends on log and metric data being queryable) | NEXT |
 
 Each phase is **independent** — the system stays operational after any phase.
 
@@ -270,13 +270,20 @@ Implements D2 (Alloy as metrics collector), D7 (Alloy owns all scraping), D10 (n
 
 ### 6.5 Definition of Done
 
-- [ ] `prometheus.scrape` and `prometheus.remote_write` blocks in Alloy config.
-- [ ] `prometheus.yml` has zero `scrape_configs` entries.
-- [ ] `redis-exporter` and `postgres-exporter` containers running, metrics exposed.
-- [ ] `enabled_plugins` file mounted; RabbitMQ exposes `:15692/metrics`.
-- [ ] All 5 targets are `up` in Prometheus UI.
-- [ ] Integration test passes within 30 seconds.
-- [ ] Decision record `history/17_0_0_METRICS_EXPANSION.md` exists.
+- [x] `prometheus.scrape` and `prometheus.remote_write` blocks in Alloy config.
+- [x] `prometheus.yml` has zero `scrape_configs` entries.
+- [x] `redis-exporter` and `postgres-exporter` containers running, metrics exposed.
+- [x] `enabled_plugins` file mounted; RabbitMQ exposes `:15692/metrics`.
+- [x] All 5 targets are `up` in Prometheus UI.
+- [x] Integration test passes within 30 seconds.
+- [x] Decision record `history/17_0_0_METRICS_EXPANSION.md` exists.
+
+**Phase 3 shipped 2026-06-20** — see
+[`temp/phase-17-metrics-expansion.md`](../../temp/phase-17-metrics-expansion.md)
+for the full phase log (verification table, decisions, operational
+notes, follow-ups). The Grafana datasource provisioning for
+Prometheus is the one prerequisite for Phase 4 — flagged in the
+phase log under "Follow-ups".
 
 ### 6.6 Out of Scope (Phase 3)
 
@@ -384,13 +391,21 @@ Each phase has a **clear definition of done** — a user can run the verificatio
 
 ## 11. Next Step
 
-The plan is **locked**. Per the project `CLAUDE.md` workflow:
+Phases 1, 2, 3 are **shipped** (2026-06-20). Phase 4 (Grafana
+dashboards) is the only remaining work in the observability rollout.
+Per the project `CLAUDE.md` workflow:
 
-1. Create a decision record in `history/` for each phase before coding (Phase 1 first).
-2. Implement Phase 1 (LangSmith tracing) and verify per §4.5.
-3. Then Phase 2 (Alloy + Loki + `correlation_id` label), Phase 3 (Alloy-scraped metrics), Phase 4 (4 non-AI dashboards).
-4. Per phase: append a phase log to `temp/phase-NN-*.md` and ship.
-5. User performs all git commits (per project `no-autonomous-commits` rule); Claude does not commit, push, or tag.
+1. Create a decision record `history/18_0_0_GRAFANA_DASHBOARDS.md`
+   before coding Phase 4 (per the decision-record-first rule).
+2. Add a Prometheus datasource to `docker/grafana/datasources/` (one-line
+   YAML) so the Infrastructure dashboard's panels resolve. Flagged as
+   a Phase 4 prerequisite in `temp/phase-17-metrics-expansion.md`.
+3. Build the 4 JSON dashboards per §7.2: System Overview,
+   Infrastructure, Logs Explorer, Business Metrics. Provisioning file
+   at `docker/grafana/dashboards/default.yaml`.
+4. Append a phase log to `temp/phase-18-grafana-dashboards.md` and ship.
+5. User performs all git commits (per project `no-autonomous-commits`
+   rule); Claude does not commit, push, or tag.
 
 ---
 

@@ -90,6 +90,25 @@ services:
       timeout: 3s
       retries: 5
 
+  # ── Postgres metrics exporter (D17.2, D17.3) ─────────────────────────────
+  # Reads POSTGRES_* from .env via the same ${...:-default} pattern the
+  # postgres service above uses (D17.3). No new env vars.
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: agentic-rag-postgres-exporter
+    environment:
+      DATA_SOURCE_URI: "postgres:5432/${POSTGRES_DB:-app}?sslmode=disable"
+      DATA_SOURCE_USER: ${POSTGRES_USER:-app}
+      DATA_SOURCE_PASS: ${POSTGRES_PASSWORD:-changeme}
+    ports:
+      - "9187:9187"
+    networks:
+      - agentic-rag
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: always
+
   # ── Qdrant ─────────────────────────────────────────────────────────────────
   qdrant:
     image: qdrant/qdrant:v1.18.1
@@ -119,6 +138,21 @@ services:
       timeout: 3s
       retries: 5
 
+  # ── Valkey metrics exporter (D17.1, D17.4) ─────────────────────────────
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0
+    container_name: agentic-rag-redis-exporter
+    environment:
+      REDIS_ADDR: redis://valkey:6379
+    ports:
+      - "9121:9121"
+    networks:
+      - agentic-rag
+    depends_on:
+      valkey:
+        condition: service_healthy
+    restart: always
+
   # ── RabbitMQ ───────────────────────────────────────────────────────────────
   rabbitmq:
     image: rabbitmq:4.3.1-management-alpine
@@ -129,9 +163,11 @@ services:
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
       - ./docker/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./docker/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
     ports:
       - "5672:5672"
       - "15672:15672"
+      - "15692:15692"   # Prometheus metrics endpoint (Phase 17, D17.6)
     networks:
       - agentic-rag
     restart: always
@@ -149,6 +185,7 @@ services:
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=15d"
       - "--web.enable-lifecycle"
+      - "--web.enable-remote-write-receiver"   # Phase 17: accept remote_write from Alloy (D7)
     volumes:
       - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
