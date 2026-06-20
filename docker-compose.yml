@@ -24,8 +24,6 @@ services:
       rabbitmq:
         condition: service_healthy
     restart: always
-    logging:
-      driver: local
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
       interval: 15s
@@ -54,8 +52,6 @@ services:
       valkey:
         condition: service_healthy
     restart: always
-    logging:
-      driver: local
 
   # ── Celery Beat ────────────────────────────────────────────────────────────
   celery-beat:
@@ -72,8 +68,6 @@ services:
     depends_on:
       - celery-worker
     restart: always
-    logging:
-      driver: local
 
   # ── PostgreSQL 16 ──────────────────────────────────────────────────────────
   postgres:
@@ -90,8 +84,6 @@ services:
     networks:
       - agentic-rag
     restart: always
-    logging:
-      driver: local
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app}"]
       interval: 5s
@@ -109,8 +101,6 @@ services:
     networks:
       - agentic-rag
     restart: always
-    logging:
-      driver: local
 
   # ── Valkey (Redis-compatible) ──────────────────────────────────────────────
   valkey:
@@ -123,8 +113,6 @@ services:
     networks:
       - agentic-rag
     restart: always
-    logging:
-      driver: local
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 5s
@@ -147,8 +135,6 @@ services:
     networks:
       - agentic-rag
     restart: always
-    logging:
-      driver: local
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
       interval: 10s
@@ -174,8 +160,6 @@ services:
       app:
         condition: service_healthy
     restart: always
-    logging:
-      driver: local
   # ── Grafana ────────────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:13.0.2
@@ -194,37 +178,46 @@ services:
     depends_on:
       - loki
     restart: always
-    logging:
-      driver: local
 
   # ── Loki ───────────────────────────────────────────────────────────────────
   loki:
     image: grafana/loki:3.7.2
     container_name: agentic-rag-loki
     command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./docker/loki/local-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
     ports:
       - "3100:3100"
     networks:
       - agentic-rag
     restart: always
-    logging:
-      driver: local
 
-  # ── Promtail ───────────────────────────────────────────────────────────────
-  promtail:
-    image: grafana/promtail:3.5.0
-    container_name: agentic-rag-promtail
+  # ── Grafana Alloy (D8: v1.17.0) ──────────────────────────────────────────
+  # Unified collector for BOTH logs and metrics.
+  # Phase 16 ships the log half (loki.source.docker -> loki.write).
+  # Phase 17 will extend docker/alloy/config.alloy with prometheus.scrape.
+  alloy:
+    image: grafana/alloy:v1.17.0
+    container_name: agentic-rag-alloy
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
+      - --server.http.listen-addr=0.0.0.0:12345
     volumes:
-      - /var/log:/var/log:ro
-      - ./docker/promtail/config.yaml:/etc/promtail/config.yaml
-    command: -config.file=/etc/promtail/config.yaml
+      - ./docker/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - alloy_data:/var/lib/alloy/data
+    ports:
+      - "12345:12345"   # Alloy self-metrics / debug UI; not scraped in Phase 16
     networks:
       - agentic-rag
     depends_on:
-      - loki
+      loki:
+        condition: service_started
     restart: always
-    logging:
-      driver: local
 
   # ── Admin UIs (profile: tools — opt-in, not started by default) ───────────
   # Start with:  docker compose --profile tools up -d
@@ -251,8 +244,6 @@ services:
     restart: unless-stopped
     profiles:
       - tools
-    logging:
-      driver: local
 
   redis-insight:
     image: redis/redisinsight:3.4.2
@@ -267,8 +258,6 @@ services:
     restart: unless-stopped
     profiles:
       - tools
-    logging:
-      driver: local
 
 networks:
   agentic-rag:
@@ -295,3 +284,7 @@ volumes:
     name: agentic-rag-prometheus-data
   grafana_data:
     name: agentic-rag-grafana-data
+  loki_data:
+    name: agentic-rag-loki-data
+  alloy_data:
+    name: agentic-rag-alloy-data

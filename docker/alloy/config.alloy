@@ -1,0 +1,95 @@
+// docker/alloy/config.alloy
+// Phase 16 — Log pipeline (D5, D8, D9; tactical D16.3, D16.4).
+// Replaces docker/promtail/ + docker/promtail/config.yaml.
+// Reads container stdout via Docker socket; ships structured logs to Loki.
+// Phase 17 will extend this file with the prometheus.scrape blocks.
+
+// ─── Container discovery ─────────────────────────────────────────────────────
+// One discovery target per running container in the agentic-rag compose
+// project. The Docker socket is mounted read-only into the Alloy container.
+discovery.docker "all_containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+// ─── Label extraction ────────────────────────────────────────────────────────
+// Promote two labels to every log line before it enters loki.source.docker:
+//   service    = the docker compose service name (e.g. "app", "celery-worker")
+//   container  = the full container name (e.g. "agentic-rag-app")
+// The compose service label is set automatically by docker compose for
+// every service in the project.
+discovery.relabel "alloy_logs" {
+  targets = discovery.docker.all_containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+}
+
+// ─── Source: read container stdout ───────────────────────────────────────────
+// loki.source.docker tails the JSON log file the docker daemon writes for
+// each container. We override the default 60s refresh interval to 5s so
+// new containers (e.g. ephemeral celery-worker restarts) show up quickly.
+loki.source.docker "alloy_logs" {
+  host             = "unix:///var/run/docker.sock"
+  targets          = discovery.relabel.alloy_logs.output
+  refresh_interval = "5s"
+  forward_to       = [loki.process.parse_logs.receiver]
+}
+
+// ─── Process: parse structlog JSON and promote to Loki labels ────────────────
+// structlog envelope (from app/observability/logging.py):
+//   {"event": "...", "level": "info", "timestamp": "2026-06-20T...",
+//    "correlation_id": "<uuid>", "thread_id": "<uuid>", "user_id": "...",
+//    "endpoint": "stream_run", "logger": "app.api.chat", ...}
+// Fields set via bind_contextvars at the API boundary (chat.py:132-137) flow
+// through automatically. The level field comes from
+// structlog.stdlib.add_log_level.
+loki.process "parse_logs" {
+  forward_to = [loki.write.loki.receiver]
+
+  stage.json {
+    expressions = {
+      correlation_id = "correlation_id",
+      thread_id      = "thread_id",
+      user_id        = "user_id",
+      level          = "level",
+      endpoint       = "endpoint",
+    }
+  }
+
+  // D16.4 — promote parsed fields to Loki labels. The label keys on the
+  // left are what LogQL queries will reference. Empty value on the right
+  // means "look up the extracted map key with the same name".
+  stage.labels {
+    values = {
+      correlation_id = "",
+      thread_id      = "",
+      user_id        = "",
+      level          = "",
+    }
+  }
+
+  // `endpoint` is high-cardinality (one value per route). Per the design
+  // doc §5.2 it stays as structured metadata, not a Loki label, to bound
+  // label cardinality. It is still visible when you click into a log line
+  // in Grafana.
+  stage.structured_metadata {
+    values = {
+      endpoint = "endpoint",
+    }
+  }
+}
+
+// ─── Sink: push to Loki ──────────────────────────────────────────────────────
+loki.write "loki" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

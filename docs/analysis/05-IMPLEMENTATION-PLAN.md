@@ -14,7 +14,13 @@
 > - `[DONE]` — implementation complete, tests passing
 > - `[PENDING]` — work not yet started
 >
-> Phases 1–14 are `[DONE]`.  No new phase is planned.
+> Phases 1–14 are `[DONE]`.  No new phase is planned in this document.
+>
+> **Observability rollout (project phases 15–18) is tracked in
+> [07-OBSERVABILITY-IMPLEMENTATION-PLAN.md](07-OBSERVABILITY-IMPLEMENTATION-PLAN.md).**
+> Project phase 16 (observability phase 2: log pipeline — Alloy
+> replaces Promtail) was shipped 2026-06-20 — see
+> `history/16_0_0_LOG_PIPELINE_ALLOY.md`.
 
 ---
 

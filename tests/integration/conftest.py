@@ -13,6 +13,7 @@ environment variables when running from within another container.
     VALKEY_TEST_URL     — default: redis://localhost:6380
     SALEOR_TEST_URL     — default: http://localhost:8000
     APP_TEST_URL        — default: http://localhost:8080
+    LOKI_TEST_URL       — default: http://localhost:3100
 
 Test-user credentials live in ``.env.local`` (git-ignored) — see
 ``docs/SALEOR-APP-WEBHOOK-SETUP.md`` Step 6 for the full
@@ -45,6 +46,7 @@ QDRANT_URL: str = os.environ.get("QDRANT_TEST_URL", "http://localhost:6333")
 VALKEY_URL: str = os.environ.get("VALKEY_TEST_URL", "redis://localhost:6380")
 SALEOR_URL: str = os.environ.get("SALEOR_TEST_URL", "http://localhost:8000")
 APP_URL: str = os.environ.get("APP_TEST_URL", "http://localhost:8080")
+LOKI_URL: str = os.environ.get("LOKI_TEST_URL", "http://localhost:3100")
 
 # Test-user credentials — loaded from .env.local (git-ignored).  See the
 # module docstring for the full list of supported variables.  Fall back
@@ -93,6 +95,46 @@ def saleor_url() -> str:
 def app_url() -> str:
     """Return the running FastAPI app base URL for integration tests."""
     return APP_URL
+
+
+# ---------------------------------------------------------------------------
+# Loki — Phase 16 log pipeline (D5/D8/D9; tactical D16.1-D16.5)
+# ---------------------------------------------------------------------------
+# The ``loki_ready`` fixture is intentionally function-scoped so each test
+# gets a fresh "is the observability stack up?" probe — by the time a
+# developer runs the integration suite the Loki + Alloy containers may
+# have been started minutes or hours earlier, so we don't want a single
+# stale session check to mask a torn-down stack.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def loki_url() -> str:
+    """Return the Loki base URL for integration tests."""
+    return LOKI_URL
+
+
+@pytest.fixture
+def loki_ready(loki_url: str) -> str:
+    """Return the Loki base URL when ``/ready`` returns 200, else skip.
+
+    Phase 16 ships the log pipeline as a default-ON observability stack,
+    but a developer may be running the app subset (postgres, app, qdrant)
+    without Loki.  We skip the test with a clear message rather than fail
+    so a partial stack is still useful.
+    """
+    import httpx
+
+    try:
+        response = httpx.get(f"{loki_url}/ready", timeout=2.0)
+    except httpx.HTTPError as exc:
+        pytest.skip(f"Loki not reachable at {loki_url}: {exc}")
+    if response.status_code != 200:
+        pytest.skip(
+            f"Loki at {loki_url} returned {response.status_code} on /ready; "
+            "observability stack may be offline."
+        )
+    return loki_url
 
 
 # ---------------------------------------------------------------------------
