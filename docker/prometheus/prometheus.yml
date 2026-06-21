@@ -1,10 +1,11 @@
+# docker/prometheus/prometheus.yml
+# Phase 17 — Metrics expansion.
+# Per D7, Prometheus is a pure storage + query backend. All scraping is
+# owned by Grafana Alloy (see docker/alloy/config.alloy). This file
+# contains only the global config; scrape_configs is intentionally empty
+# so the only way metrics enter Prometheus is through Alloy's
+# prometheus.remote_write receiver at /api/v1/write.
+
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
-
-scrape_configs:
-  - job_name: agentic-rag-app
-    static_configs:
-      - targets:
-          - app:8080
-    metrics_path: /metrics

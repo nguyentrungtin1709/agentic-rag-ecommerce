@@ -1,0 +1,479 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "description": "Business Metrics — application-level counters derived from Loki (no custom Prometheus metrics per D18.1). All queries use count_over_time(...[24h]) over a 24h window. Failure counters (B2-B5) drill through to Logs Explorer for line-level inspection. Counts reflect the last 24h and update on dashboard refresh.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Chat turns (24h, approx.)",
+      "description": "Approximation: counts every structlog line with endpoint=stream_run over 24h. Each chat turn emits 10-20 such lines (orchestrator dispatches, agent reasoning, tool calls, synthesize emits), so the displayed number is roughly an order of magnitude high. A single chat_run_completed log line at src/app/api/chat.py:270 would make this exact (D18.10, deferred). Drill-down opens Logs Explorer with endpoint=stream_run pre-filled so the operator can eyeball the actual rate.",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "count_over_time({service=\"app\"} | endpoint=\"stream_run\" [24h])",
+          "legendFormat": "approx. chat turns",
+          "refId": "A"
+        }
+      ],
+      "links": [
+        {
+          "title": "View stream_run logs",
+          "url": "/d/pod-stylist/logs-explorer?var-service=app&var-endpoint=stream_run&from=now-24h&to=now",
+          "type": "link",
+          "targetBlank": false
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Chat failures (24h)",
+      "description": "Count of chat_run_graph_failed and chat_run_graph_timeout errors over the last 24h. Any non-zero value means a user request failed. Drill-down opens Logs Explorer with level=error and endpoint=stream_run.",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 0
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "count_over_time({service=\"app\"} | endpoint=\"stream_run\" | level=\"error\" |~ \"chat_run_graph_(failed|timeout)\" [24h])",
+          "legendFormat": "chat failures",
+          "refId": "A"
+        }
+      ],
+      "links": [
+        {
+          "title": "View chat failure logs",
+          "url": "/d/pod-stylist/logs-explorer?var-service=app&var-level=error&var-endpoint=stream_run&from=now-24h&to=now",
+          "type": "link",
+          "targetBlank": false
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Image generation failures (24h)",
+      "description": "Count of generate_image_failed warnings over the last 24h (warning level, emitted by src/app/agent/nodes/generate_image.py:132). Drill-down opens Logs Explorer with level=warning.",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "count_over_time({service=~\".+\"} | level=\"warning\" |~ \"generate_image_failed\" [24h])",
+          "legendFormat": "image gen failures",
+          "refId": "A"
+        }
+      ],
+      "links": [
+        {
+          "title": "View image failure logs",
+          "url": "/d/pod-stylist/logs-explorer?var-service=app&var-level=warning&from=now-24h&to=now",
+          "type": "link",
+          "targetBlank": false
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "SSE emit failures (24h)",
+      "description": "Count of sse_emit_failed warnings over the last 24h (warning level, emitted by src/app/agent/nodes/_sse.py:75). Each event is a queue.put_nowait or serialization failure that the SSE consumer will silently truncate on. Drill-down opens Logs Explorer.",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 8
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "count_over_time({service=~\".+\"} | level=\"warning\" |~ \"sse_emit_failed\" [24h])",
+          "legendFormat": "sse emit failures",
+          "refId": "A"
+        }
+      ],
+      "links": [
+        {
+          "title": "View SSE failure logs",
+          "url": "/d/pod-stylist/logs-explorer?var-service=app&var-level=warning&from=now-24h&to=now",
+          "type": "link",
+          "targetBlank": false
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Thread lifecycle anomalies (24h)",
+      "description": "Count of orchestrate_unknown_intent warnings over the last 24h. The orchestrator received a chat turn it could not classify into a known intent — likely a prompt-injection attempt or an unsupported request. Drill-down opens Logs Explorer.",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 8
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "count_over_time({service=~\".+\"} | level=\"warning\" |~ \"orchestrate_unknown_intent\" [24h])",
+          "legendFormat": "unknown intents",
+          "refId": "A"
+        }
+      ],
+      "links": [
+        {
+          "title": "View unknown-intent logs",
+          "url": "/d/pod-stylist/logs-explorer?var-service=app&var-level=warning&from=now-24h&to=now",
+          "type": "link",
+          "targetBlank": false
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Ingestion jobs started (24h)",
+      "description": "Count of ingestion_job_created info events over the last 24h (celery-worker service). Each event marks the start of a Saleor webhook-triggered ingestion. Pair with orchestrator_failed (B6 not shown — see description) to spot retries.",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 8
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "count_over_time({service=~\".+\"} |~ \"ingestion_job_created\" [24h])",
+          "legendFormat": "ingestion jobs",
+          "refId": "A"
+        }
+      ],
+      "links": [
+        {
+          "title": "View ingestion logs",
+          "url": "/d/pod-stylist/logs-explorer?var-service=celery-worker&from=now-24h&to=now",
+          "type": "link",
+          "targetBlank": false
+        }
+      ]
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 38,
+  "tags": ["pod-stylist", "business"],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_LOKI",
+        "label": "Loki datasource",
+        "type": "datasource",
+        "query": "loki",
+        "current": {
+          "selected": false,
+          "text": "Loki",
+          "value": "Loki"
+        },
+        "hide": 0
+      }
+    ]
+  },
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": ["1m", "5m", "15m", "30m", "1h", "2h", "1d"]
+  },
+  "timezone": "browser",
+  "title": "Business Metrics",
+  "uid": "business-metrics",
+  "version": 1,
+  "weekStart": ""
+}

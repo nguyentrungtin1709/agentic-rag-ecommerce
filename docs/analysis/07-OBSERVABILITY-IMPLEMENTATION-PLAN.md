@@ -1,9 +1,9 @@
 # Observability Implementation Plan
 
 **Project**: `agentic-rag-ecommerce` — AI POD Stylist & Recommendation System
-- **Version**: 1.0
-- **Date**: 2026-06-17
-- **Status**: Active — decisions locked, Phase 1 ready to start
+- **Version**: 1.1
+- **Date**: 2026-06-17 (updated 2026-06-20)
+- **Status**: Active — Phase 1 (LangSmith tracing) shipped 2026-06-20, Phase 2 (log pipeline) shipped 2026-06-20, Phase 3 (metrics expansion) shipped 2026-06-20, Phase 4 (Grafana dashboards) shipped 2026-06-21. Observability rollout complete: traces + logs + metrics + visualization, all unified on `correlation_id`.
 
 > **Scope of this document** — the phased rollout plan for the observability
 > stack. Locked decisions D1–D10, per-phase scope, files touched, task
@@ -23,7 +23,7 @@ Audit performed 2026-06-17, one line per pillar:
 
 | Pillar | Current State |
 |---|---|
-| AI tracing (LangChain / LangGraph / LlamaIndex) | `LANGSMITH_TRACING=false`. LangChain/LangGraph SDK has env-vars + deps but the flag is off. LlamaIndex has OpenInference instrumentation but no OTLP exporter, so spans go nowhere. |
+| AI tracing (LangChain / LangGraph / LlamaIndex) | `LANGSMITH_TRACING=false`. LangChain/LangGraph SDK has env-vars + deps but the flag is off. LlamaIndex has OpenInference instrumentation but no OTLP exporter, so per-call LlamaIndex spans go nowhere (revised 2026-06-18 — LlamaIndex path is now out of scope; only the LangGraph path is shipped). |
 | Log pipeline | Promtail scrapes `/var/log/*log` (host syslog). Containers use `logging: driver: local` so app/celery stdout never reaches Promtail. Loki is empty of app logs. |
 | Metrics | Prometheus scrapes only `app:8080/metrics` (15s interval). Qdrant, Postgres, Valkey, RabbitMQ, Celery are not scraped. |
 | Dashboards | `docker/grafana/dashboards/` is empty. Datasources (Loki, Prometheus) are provisioned. |
@@ -45,7 +45,7 @@ Audit performed 2026-06-17, one line per pillar:
 | D3 | Phased delivery. 4 independent shippable phases, each with a clear visible result. | 2026-06-17 |
 | D4 | Self-hosted Tempo / Jaeger is out of scope. LangSmith SaaS is the only trace backend. | 2026-06-17 |
 | D5 | Container logging driver stays at default `json-file`. Alloy reads the Docker socket. Preserves `docker logs` for operator debugging. | 2026-06-17 |
-| D6 | Dual-ingestion to LangSmith — LangChain/LangGraph via `langsmith` SDK auto-trace, LlamaIndex via OpenInference OTLP HTTP/protobuf exporter. Both paths write to the same project. | 2026-06-17 |
+| D6 | Single ingestion path to LangSmith — LangChain / LangGraph via `langsmith` SDK auto-trace, enabled by `LANGSMITH_TRACING=true` and the companion `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` / `LANGSMITH_ENDPOINT` env vars. (Originally locked 2026-06-17 as dual-path with an OpenInference + OTLP path for LlamaIndex; revised 2026-06-18 to single-path after evaluation — see Phase 1 §4 and `history/15_0_0_LANGSMITH_TRACING.md` revision history.) | 2026-06-17 (revised 2026-06-18) |
 | D7 | Alloy scrapes all `/metrics` endpoints and `remote_write`s to Prometheus. Prometheus becomes a pure storage + query backend; scraping is owned by Alloy. | 2026-06-17 |
 | D8 | Pin `grafana/alloy:v1.17.0`. | 2026-06-17 |
 | D9 | Promote `correlation_id` to a Loki label via `loki.process` JSON extraction. Accepted cardinality risk; bounded by Loki `retention_period`. | 2026-06-17 |
@@ -55,12 +55,12 @@ Audit performed 2026-06-17, one line per pillar:
 
 ## 3. Phase Overview
 
-| # | Name | Solves | Visible Result | Depends On |
-|---|---|---|---|---|
-| 1 | LangSmith tracing | AI/RAG traces not visible anywhere | One chat turn produces a trace in `smith.langchain.com` covering orchestrator + RAG + trend + synthesize, with `correlation_id` on every span | — |
-| 2 | Log pipeline (Alloy) | App/celery logs never reach Loki | Grafana Explore → Loki → `{service="app"}` returns the latest chat-turn JSON logs filterable by `correlation_id` | — (independent of Phase 1) |
-| 3 | Metrics expansion (Alloy-scraped) | Only the FastAPI app is scraped; Prometheus owns all scraping | Alloy owns scraping via `prometheus.scrape` and `prometheus.remote_write` to Prometheus. Qdrant, Postgres, Valkey, RabbitMQ metrics visible in Grafana Explore | — (independent of Phase 1, 2) |
-| 4 | Grafana dashboards (non-AI focus) | Dashboards folder empty | Grafana home shows 4 provisioned JSON dashboards: System Overview, Infrastructure, Logs Explorer, Business Metrics. AI/agent observability lives in LangSmith, not in Grafana. | 2, 3 (depends on log and metric data being queryable) |
+| # | Name | Solves | Visible Result | Depends On | Status |
+|---|---|---|---|---|---|
+| 1 | LangSmith tracing | AI/RAG traces not visible anywhere | One chat turn produces a `LangGraph` root run in `smith.langchain.com` covering the orchestrator + every LangGraph node, with `correlation_id` on the root run metadata | — | SHIPPED 2026-06-20 |
+| 2 | Log pipeline (Alloy) | App/celery logs never reach Loki | Grafana Explore → Loki → `{service="app"}` returns the latest chat-turn JSON logs filterable by `correlation_id` | — (independent of Phase 1) | SHIPPED 2026-06-20 |
+| 3 | Metrics expansion (Alloy-scraped) | Only the FastAPI app is scraped; Prometheus owns all scraping | Alloy owns scraping via `prometheus.scrape` and `prometheus.remote_write` to Prometheus. Qdrant, Postgres, Valkey, RabbitMQ metrics visible in Grafana Explore | — (independent of Phase 1, 2) | SHIPPED 2026-06-20 |
+| 4 | Grafana dashboards (non-AI focus) | Dashboards folder empty | Grafana home shows 4 provisioned JSON dashboards: System Overview, Infrastructure, Logs Explorer, Business Metrics. AI/agent observability lives in LangSmith, not in Grafana. | 2, 3 (depends on log and metric data being queryable) | SHIPPED 2026-06-21 |
 
 Each phase is **independent** — the system stays operational after any phase.
 
@@ -74,7 +74,7 @@ All LLM/RAG traces are off. The user has chatted with the system but nothing sho
 
 ### 4.2 Scope
 
-Implements D6 (dual-ingestion to LangSmith).
+Implements D6 (single-path ingestion to LangSmith via the `langsmith` SDK). Originally locked as dual-path (with an OpenInference + OTLP path for LlamaIndex); revised 2026-06-18 to single-path after evaluation.
 
 **Environment variables** (add to `.env` and `.env.example`):
 
@@ -82,54 +82,55 @@ Implements D6 (dual-ingestion to LangSmith).
 |---|---|---|
 | `LANGSMITH_TRACING` | `true` | Enables `langsmith` SDK auto-trace for LangChain/LangGraph |
 | `LANGSMITH_ENDPOINT` | `https://aws.api.smith.langchain.com` | SDK ingestion endpoint — NO `/otel` suffix |
-| `LANGSMITH_API_KEY` | `lsv2_pt_*` | API key (already in `.env`); same key works for both paths |
+| `LANGSMITH_API_KEY` | `lsv2_pt_*` | API key (already in `.env`) |
 | `LANGSMITH_PROJECT` | `agentic-rag-ecommerce` | LangSmith project name |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `https://aws.api.smith.langchain.com/otel/v1/traces` | OTLP ingestion endpoint — WITH `/otel/v1/traces` suffix |
-| `OTEL_EXPORTER_OTLP_HEADERS` | `x-api-key=${LANGSMITH_API_KEY},Langsmith-Project=agentic-rag-ecommerce` | OTLP auth header + project routing |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `https://aws.api.smith.langchain.com/otel/v1/traces` | (Reserved for future OTel spans) OTLP ingestion endpoint — WITH `/otel/v1/traces` suffix |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `x-api-key=${LANGSMITH_API_KEY},Langsmith-Project=agentic-rag-ecommerce` | (Reserved for future OTel spans) OTLP auth header + project routing |
+| `DEPLOYMENT_ENVIRONMENT` | `development` | OTel `deployment.environment` resource attribute |
+| `APP_VERSION` | `1.0.0` | OTel `service.version` resource attribute |
 
 **Dependencies** (add to `pyproject.toml`):
 
 - `opentelemetry-api`
 - `opentelemetry-sdk`
-- `opentelemetry-exporter-otlp-proto-http` (HTTP/protobuf transport per D6)
+- `opentelemetry-exporter-otlp-proto-http` (reserved for future OTel spans)
 - `opentelemetry-instrumentation` (if not already present)
 
 **Code changes** (extend `src/app/observability/tracing.py::configure_tracing`):
 
-- Build a `TracerProvider` with resource attributes: `service.name=agentic-rag-ecommerce`, `service.version=1.0.0`, `deployment.environment=development` (or whatever value `LANGSMITH_PROJECT` is set to).
-- Attach a `BatchSpanProcessor` wrapping `OTLPSpanExporter` (HTTP/protobuf) configured from env.
-- Set the provider as the global `trace.set_tracer_provider(...)`.
-- Call `LlamaIndexOpenInferenceInstrumentor().instrument(tracer_provider=...)` so LlamaIndex spans go to the same provider.
-- Do NOT call `LangChainTracer` or other callbacks — the `langsmith` SDK auto-trace path is enabled by env alone.
+- Build a `TracerProvider` with resource attributes: `service.name=agentic-rag-ecommerce`, `service.version=1.0.0`, `deployment.environment=development`.
+- Attach a `BatchSpanProcessor` wrapping `OTLPSpanExporter` (HTTP/protobuf) configured from env. **The provider is currently idle** — no library instrumentor is wired. Custom spans added in the future (`trace.get_tracer(__name__).start_as_current_span(...)`) will flow to LangSmith automatically.
+- Write the `LANGSMITH_*` env vars to `os.environ` from validated settings. The `langsmith` SDK auto-trace path is enabled by env alone; no `LangChainTracer` callback is needed.
+- The OpenInference LlamaIndex path (previously included) was removed in the 2026-06-18 revision. Re-enabling it is a one-line restore in `configure_tracing` plus restoring the two deleted tests.
 
 **Verify** `correlation_id` lands on the root LangSmith run (auto-mapped from `metadata.correlation_id` by the SDK — already wired in `src/app/api/chat.py`).
 
 ### 4.3 Tasks
 
-1. Add the 6 environment variables to `.env` and `.env.example`.
+1. Add the 4 `LANGSMITH_*` env vars (plus the 4 OTel-side vars kept as future-use) to `.env` and `.env.example`. Flip `LANGSMITH_TRACING=true`.
 2. Add OTel dependencies to `pyproject.toml` and run `uv sync`.
-3. Extend `configure_tracing` to build the `TracerProvider` and attach the OTLP exporter.
-4. Wire `LlamaIndexOpenInferenceInstrumentor` to the same provider.
-5. Confirm in `src/app/main.py` lifespan that `configure_tracing` is called early enough (before any LLM call).
-6. Write `tests/unit/observability/test_tracing.py` covering: TracerProvider construction, OTLP exporter endpoint, OTLP headers, resource attributes, instrumentor wiring.
-7. Create decision record `history/15_0_0_LANGSMITH_TRACING.md` capturing D6.
-8. Add a phase log `temp/phase-15-langsmith-tracing.md` (per project workflow).
-9. Verify end-to-end: run `docker-compose up -d`, post one chat turn, confirm a trace appears in `smith.langchain.com` for the project `agentic-rag-ecommerce`.
+3. Extend `configure_tracing` to build the `TracerProvider` + OTLP exporter and write the `LANGSMITH_*` env vars.
+4. Confirm in `src/app/main.py` lifespan that `configure_tracing` is called early enough (before any LLM call).
+5. Write `tests/unit/observability/test_tracing.py` covering: TracerProvider construction, OTLP exporter endpoint + headers, resource attributes, `LANGSMITH_*` env var writes (12 cases).
+6. Create decision record `history/15_0_0_LANGSMITH_TRACING.md` capturing D6 (single-path revision).
+7. Add a phase log `temp/phase-15-langsmith-tracing.md` (per project workflow).
+8. Verify end-to-end: run `docker-compose up -d`, post one chat turn, confirm a root `LangGraph` run appears in `smith.langchain.com` for project `agentic-rag-ecommerce` with `correlation_id` on metadata.
 
 ### 4.4 Test Plan
 
-- **Unit**: `test_tracing.py` verifies provider config, exporter endpoint + headers, resource attributes.
+- **Unit**: `test_tracing.py` verifies provider config, exporter endpoint + headers, resource attributes, `LANGSMITH_*` env var writes, and `setenv`-vs-`setdefault` semantics.
 - **Integration**: post a chat request, assert that a run appears in LangSmith with the expected `correlation_id` tag within 30 seconds.
-- **Manual smoke**: open `smith.langchain.com`, expand the trace, verify orchestrator / RAG / synthesize / image nodes are all visible with token usage.
+- **Manual smoke**: open `smith.langchain.com`, expand the trace, verify orchestrator + every LangGraph node is visible with token usage and latency. (Per-call LlamaIndex spans like `OpenAIEmbedding.aget_text_embedding` are NOT produced by Phase 1 — they were removed in the revision.)
 
 ### 4.5 Definition of Done
 
-- [ ] All 6 env vars present in `.env` and `.env.example`.
+- [ ] `LANGSMITH_TRACING=true` and the 3 companion `LANGSMITH_*` vars are present in `.env`. `.env.example` documents the same shape with safe defaults.
+- [ ] The 4 OTel-side vars (`OTEL_EXPORTER_OTLP_*`, `DEPLOYMENT_ENVIRONMENT`, `APP_VERSION`) are present in both `.env` and `.env.example`.
 - [ ] `pyproject.toml` has all 4 OTel dependencies; `uv sync` succeeds.
-- [ ] `configure_tracing` builds provider, attaches exporter, instruments LlamaIndex.
-- [ ] Unit tests pass with `pytest`.
-- [ ] Decision record `history/15_0_0_LANGSMITH_TRACING.md` exists.
-- [ ] One end-to-end chat turn produces a complete trace in `smith.langchain.com` with `correlation_id` on the root run.
+- [ ] `configure_tracing` builds the OTel `TracerProvider`, attaches the OTLP exporter, and writes `LANGSMITH_*` env vars.
+- [ ] Unit tests pass with `pytest` (12 new observability cases; full suite at 81% coverage or above).
+- [ ] Decision record `history/15_0_0_LANGSMITH_TRACING.md` exists with the 2026-06-18 revision captured.
+- [ ] One end-to-end chat turn produces a `LangGraph` run in `smith.langchain.com` with `correlation_id` on the root run.
 
 ### 4.6 Out of Scope (Phase 1)
 
@@ -137,6 +138,7 @@ Implements D6 (dual-ingestion to LangSmith).
 - Self-hosted OTel collector sidecar (Alloy is not used for traces in this phase).
 - Trace sampling / quotas.
 - Sending traces to multiple backends (LangSmith is the only trace backend per D4).
+- Per-call LlamaIndex spans (OpenInference + OTLP path). Reserved as a future hook — the OTel infrastructure is built and idle, ready to receive spans if the path is restored.
 
 ---
 
@@ -268,13 +270,20 @@ Implements D2 (Alloy as metrics collector), D7 (Alloy owns all scraping), D10 (n
 
 ### 6.5 Definition of Done
 
-- [ ] `prometheus.scrape` and `prometheus.remote_write` blocks in Alloy config.
-- [ ] `prometheus.yml` has zero `scrape_configs` entries.
-- [ ] `redis-exporter` and `postgres-exporter` containers running, metrics exposed.
-- [ ] `enabled_plugins` file mounted; RabbitMQ exposes `:15692/metrics`.
-- [ ] All 5 targets are `up` in Prometheus UI.
-- [ ] Integration test passes within 30 seconds.
-- [ ] Decision record `history/17_0_0_METRICS_EXPANSION.md` exists.
+- [x] `prometheus.scrape` and `prometheus.remote_write` blocks in Alloy config.
+- [x] `prometheus.yml` has zero `scrape_configs` entries.
+- [x] `redis-exporter` and `postgres-exporter` containers running, metrics exposed.
+- [x] `enabled_plugins` file mounted; RabbitMQ exposes `:15692/metrics`.
+- [x] All 5 targets are `up` in Prometheus UI.
+- [x] Integration test passes within 30 seconds.
+- [x] Decision record `history/17_0_0_METRICS_EXPANSION.md` exists.
+
+**Phase 3 shipped 2026-06-20** — see
+[`temp/phase-17-metrics-expansion.md`](../../temp/phase-17-metrics-expansion.md)
+for the full phase log (verification table, decisions, operational
+notes, follow-ups). The Grafana datasource provisioning for
+Prometheus is the one prerequisite for Phase 4 — flagged in the
+phase log under "Follow-ups".
 
 ### 6.6 Out of Scope (Phase 3)
 
@@ -382,13 +391,21 @@ Each phase has a **clear definition of done** — a user can run the verificatio
 
 ## 11. Next Step
 
-The plan is **locked**. Per the project `CLAUDE.md` workflow:
+Phases 1, 2, 3 are **shipped** (2026-06-20). Phase 4 (Grafana
+dashboards) is the only remaining work in the observability rollout.
+Per the project `CLAUDE.md` workflow:
 
-1. Create a decision record in `history/` for each phase before coding (Phase 1 first).
-2. Implement Phase 1 (LangSmith tracing) and verify per §4.5.
-3. Then Phase 2 (Alloy + Loki + `correlation_id` label), Phase 3 (Alloy-scraped metrics), Phase 4 (4 non-AI dashboards).
-4. Per phase: append a phase log to `temp/phase-NN-*.md` and ship.
-5. User performs all git commits (per project `no-autonomous-commits` rule); Claude does not commit, push, or tag.
+1. Create a decision record `history/18_0_0_GRAFANA_DASHBOARDS.md`
+   before coding Phase 4 (per the decision-record-first rule).
+2. Add a Prometheus datasource to `docker/grafana/datasources/` (one-line
+   YAML) so the Infrastructure dashboard's panels resolve. Flagged as
+   a Phase 4 prerequisite in `temp/phase-17-metrics-expansion.md`.
+3. Build the 4 JSON dashboards per §7.2: System Overview,
+   Infrastructure, Logs Explorer, Business Metrics. Provisioning file
+   at `docker/grafana/dashboards/default.yaml`.
+4. Append a phase log to `temp/phase-18-grafana-dashboards.md` and ship.
+5. User performs all git commits (per project `no-autonomous-commits`
+   rule); Claude does not commit, push, or tag.
 
 ---
 

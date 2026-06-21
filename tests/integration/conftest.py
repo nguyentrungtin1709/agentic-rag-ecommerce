@@ -13,6 +13,9 @@ environment variables when running from within another container.
     VALKEY_TEST_URL     — default: redis://localhost:6380
     SALEOR_TEST_URL     — default: http://localhost:8000
     APP_TEST_URL        — default: http://localhost:8080
+    LOKI_TEST_URL       — default: http://localhost:3100
+    PROMETHEUS_TEST_URL — default: http://localhost:9090
+    GRAFANA_TEST_URL    — default: http://localhost:3000
 
 Test-user credentials live in ``.env.local`` (git-ignored) — see
 ``docs/SALEOR-APP-WEBHOOK-SETUP.md`` Step 6 for the full
@@ -45,6 +48,11 @@ QDRANT_URL: str = os.environ.get("QDRANT_TEST_URL", "http://localhost:6333")
 VALKEY_URL: str = os.environ.get("VALKEY_TEST_URL", "redis://localhost:6380")
 SALEOR_URL: str = os.environ.get("SALEOR_TEST_URL", "http://localhost:8000")
 APP_URL: str = os.environ.get("APP_TEST_URL", "http://localhost:8080")
+LOKI_URL: str = os.environ.get("LOKI_TEST_URL", "http://localhost:3100")
+PROMETHEUS_URL: str = os.environ.get("PROMETHEUS_TEST_URL", "http://localhost:9090")
+GRAFANA_URL: str = os.environ.get("GRAFANA_TEST_URL", "http://localhost:3000")
+GRAFANA_USER: str = os.environ.get("GRAFANA_USER", "admin")
+GRAFANA_PASSWORD: str = os.environ.get("GRAFANA_PASSWORD", "admin")
 
 # Test-user credentials — loaded from .env.local (git-ignored).  See the
 # module docstring for the full list of supported variables.  Fall back
@@ -93,6 +101,140 @@ def saleor_url() -> str:
 def app_url() -> str:
     """Return the running FastAPI app base URL for integration tests."""
     return APP_URL
+
+
+# ---------------------------------------------------------------------------
+# Loki — Phase 16 log pipeline (D5/D8/D9; tactical D16.1-D16.5)
+# ---------------------------------------------------------------------------
+# The ``loki_ready`` fixture is intentionally function-scoped so each test
+# gets a fresh "is the observability stack up?" probe — by the time a
+# developer runs the integration suite the Loki + Alloy containers may
+# have been started minutes or hours earlier, so we don't want a single
+# stale session check to mask a torn-down stack.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def loki_url() -> str:
+    """Return the Loki base URL for integration tests."""
+    return LOKI_URL
+
+
+@pytest.fixture
+def loki_ready(loki_url: str) -> str:
+    """Return the Loki base URL when ``/ready`` returns 200, else skip.
+
+    Phase 16 ships the log pipeline as a default-ON observability stack,
+    but a developer may be running the app subset (postgres, app, qdrant)
+    without Loki.  We skip the test with a clear message rather than fail
+    so a partial stack is still useful.
+    """
+    import httpx
+
+    try:
+        response = httpx.get(f"{loki_url}/ready", timeout=2.0)
+    except httpx.HTTPError as exc:
+        pytest.skip(f"Loki not reachable at {loki_url}: {exc}")
+    if response.status_code != 200:
+        pytest.skip(
+            f"Loki at {loki_url} returned {response.status_code} on /ready; "
+            "observability stack may be offline."
+        )
+    return loki_url
+
+
+# ---------------------------------------------------------------------------
+# Prometheus — Phase 17 metrics pipeline (D2, D7, D10; tactical D17.1-D17.9)
+# ---------------------------------------------------------------------------
+# The ``prometheus_ready`` fixture is intentionally function-scoped so each
+# test gets a fresh "is the observability stack up?" probe — by the time a
+# developer runs the integration suite the Prometheus + Alloy containers
+# may have been started minutes or hours earlier, so we don't want a
+# single stale session check to mask a torn-down stack.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def prometheus_url() -> str:
+    """Return the Prometheus base URL for integration tests."""
+    return PROMETHEUS_URL
+
+
+@pytest.fixture
+def prometheus_ready(prometheus_url: str) -> str:
+    """Return the Prometheus base URL when ``/-/ready`` returns 200, else skip.
+
+    Phase 17 ships the metrics pipeline as a default-ON observability stack,
+    but a developer may be running the app subset (postgres, app, qdrant)
+    without Prometheus + Alloy.  We skip the test with a clear message
+    rather than fail so a partial stack is still useful — same pattern as
+    ``loki_ready`` above.
+    """
+    import httpx
+
+    try:
+        response = httpx.get(f"{prometheus_url}/-/ready", timeout=2.0)
+    except httpx.HTTPError as exc:
+        pytest.skip(f"Prometheus not reachable at {prometheus_url}: {exc}")
+    if response.status_code != 200:
+        pytest.skip(
+            f"Prometheus at {prometheus_url} returned {response.status_code} "
+            "on /-/ready; observability stack may be offline."
+        )
+    return prometheus_url
+
+
+# ---------------------------------------------------------------------------
+# Grafana — Phase 18 dashboard provisioning
+# ---------------------------------------------------------------------------
+# The ``grafana_ready`` fixture is intentionally function-scoped so each
+# test gets a fresh "is the observability stack up?" probe.  Phase 18
+# provisions dashboards via file-based provider; the runtime test below
+# queries Grafana's search API to confirm all four dashboards were
+# picked up.  A developer running only the app subset still passes the
+# static tests — only the API smoke test skips gracefully.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def grafana_url() -> str:
+    """Return the Grafana base URL for integration tests."""
+    return GRAFANA_URL
+
+
+@pytest.fixture
+def grafana_credentials() -> tuple[str, str]:
+    """Return ``(user, password)`` for the Grafana HTTP API basic auth.
+
+    Matches the credentials configured in ``docker-compose.yml`` via
+    ``GRAFANA_USER`` / ``GRAFANA_PASSWORD`` env vars, with the same
+    ``admin`` / ``admin`` fallback as the compose file.
+    """
+    return GRAFANA_USER, GRAFANA_PASSWORD
+
+
+@pytest.fixture
+def grafana_ready(grafana_url: str) -> str:
+    """Return the Grafana base URL when ``/api/health`` returns 200, else skip.
+
+    Phase 18 ships dashboard provisioning as a default-ON observability
+    layer, but a developer may be running the app subset (postgres, app,
+    qdrant) without Grafana.  We skip the test with a clear message
+    rather than fail so a partial stack is still useful — same pattern
+    as ``loki_ready`` / ``prometheus_ready`` above.
+    """
+    import httpx
+
+    try:
+        response = httpx.get(f"{grafana_url}/api/health", timeout=2.0)
+    except httpx.HTTPError as exc:
+        pytest.skip(f"Grafana not reachable at {grafana_url}: {exc}")
+    if response.status_code != 200:
+        pytest.skip(
+            f"Grafana at {grafana_url} returned {response.status_code} "
+            "on /api/health; observability stack may be offline."
+        )
+    return grafana_url
 
 
 # ---------------------------------------------------------------------------
