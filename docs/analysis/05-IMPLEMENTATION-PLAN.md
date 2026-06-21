@@ -18,9 +18,12 @@
 >
 > **Observability rollout (project phases 15–18) is tracked in
 > [07-OBSERVABILITY-IMPLEMENTATION-PLAN.md](07-OBSERVABILITY-IMPLEMENTATION-PLAN.md).**
-> Project phase 16 (observability phase 2: log pipeline — Alloy
-> replaces Promtail) was shipped 2026-06-20 — see
-> `history/16_0_0_LOG_PIPELINE_ALLOY.md`.
+> Project phases 15 (LangSmith tracing), 16 (log pipeline — Alloy
+> replaces Promtail), 17 (metrics expansion — Alloy replaces
+> Prometheus scraping), and 18 (Grafana dashboards) were shipped
+> 2026-06-20 / 2026-06-21 — see `history/15_0_0_LANGSMITH_TRACING.md`
+> through `history/18_0_0_GRAFANA_DASHBOARDS.md`. Observability
+> rollout complete.
 
 ---
 

@@ -15,6 +15,7 @@ environment variables when running from within another container.
     APP_TEST_URL        — default: http://localhost:8080
     LOKI_TEST_URL       — default: http://localhost:3100
     PROMETHEUS_TEST_URL — default: http://localhost:9090
+    GRAFANA_TEST_URL    — default: http://localhost:3000
 
 Test-user credentials live in ``.env.local`` (git-ignored) — see
 ``docs/SALEOR-APP-WEBHOOK-SETUP.md`` Step 6 for the full
@@ -49,6 +50,9 @@ SALEOR_URL: str = os.environ.get("SALEOR_TEST_URL", "http://localhost:8000")
 APP_URL: str = os.environ.get("APP_TEST_URL", "http://localhost:8080")
 LOKI_URL: str = os.environ.get("LOKI_TEST_URL", "http://localhost:3100")
 PROMETHEUS_URL: str = os.environ.get("PROMETHEUS_TEST_URL", "http://localhost:9090")
+GRAFANA_URL: str = os.environ.get("GRAFANA_TEST_URL", "http://localhost:3000")
+GRAFANA_USER: str = os.environ.get("GRAFANA_USER", "admin")
+GRAFANA_PASSWORD: str = os.environ.get("GRAFANA_PASSWORD", "admin")
 
 # Test-user credentials — loaded from .env.local (git-ignored).  See the
 # module docstring for the full list of supported variables.  Fall back
@@ -178,6 +182,59 @@ def prometheus_ready(prometheus_url: str) -> str:
             "on /-/ready; observability stack may be offline."
         )
     return prometheus_url
+
+
+# ---------------------------------------------------------------------------
+# Grafana — Phase 18 dashboard provisioning
+# ---------------------------------------------------------------------------
+# The ``grafana_ready`` fixture is intentionally function-scoped so each
+# test gets a fresh "is the observability stack up?" probe.  Phase 18
+# provisions dashboards via file-based provider; the runtime test below
+# queries Grafana's search API to confirm all four dashboards were
+# picked up.  A developer running only the app subset still passes the
+# static tests — only the API smoke test skips gracefully.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def grafana_url() -> str:
+    """Return the Grafana base URL for integration tests."""
+    return GRAFANA_URL
+
+
+@pytest.fixture
+def grafana_credentials() -> tuple[str, str]:
+    """Return ``(user, password)`` for the Grafana HTTP API basic auth.
+
+    Matches the credentials configured in ``docker-compose.yml`` via
+    ``GRAFANA_USER`` / ``GRAFANA_PASSWORD`` env vars, with the same
+    ``admin`` / ``admin`` fallback as the compose file.
+    """
+    return GRAFANA_USER, GRAFANA_PASSWORD
+
+
+@pytest.fixture
+def grafana_ready(grafana_url: str) -> str:
+    """Return the Grafana base URL when ``/api/health`` returns 200, else skip.
+
+    Phase 18 ships dashboard provisioning as a default-ON observability
+    layer, but a developer may be running the app subset (postgres, app,
+    qdrant) without Grafana.  We skip the test with a clear message
+    rather than fail so a partial stack is still useful — same pattern
+    as ``loki_ready`` / ``prometheus_ready`` above.
+    """
+    import httpx
+
+    try:
+        response = httpx.get(f"{grafana_url}/api/health", timeout=2.0)
+    except httpx.HTTPError as exc:
+        pytest.skip(f"Grafana not reachable at {grafana_url}: {exc}")
+    if response.status_code != 200:
+        pytest.skip(
+            f"Grafana at {grafana_url} returned {response.status_code} "
+            "on /api/health; observability stack may be offline."
+        )
+    return grafana_url
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 **Project**: `agentic-rag-ecommerce` — AI POD Stylist & Recommendation System
 - **Version**: 1.1
 - **Date**: 2026-06-17 (updated 2026-06-20)
-- **Status**: Active — Phase 1 (LangSmith tracing) shipped 2026-06-20, Phase 2 (log pipeline) shipped 2026-06-20, Phase 3 (metrics expansion) shipped 2026-06-20. Phase 4 (Grafana dashboards) ready to start.
+- **Status**: Active — Phase 1 (LangSmith tracing) shipped 2026-06-20, Phase 2 (log pipeline) shipped 2026-06-20, Phase 3 (metrics expansion) shipped 2026-06-20, Phase 4 (Grafana dashboards) shipped 2026-06-21. Observability rollout complete: traces + logs + metrics + visualization, all unified on `correlation_id`.
 
 > **Scope of this document** — the phased rollout plan for the observability
 > stack. Locked decisions D1–D10, per-phase scope, files touched, task
@@ -60,7 +60,7 @@ Audit performed 2026-06-17, one line per pillar:
 | 1 | LangSmith tracing | AI/RAG traces not visible anywhere | One chat turn produces a `LangGraph` root run in `smith.langchain.com` covering the orchestrator + every LangGraph node, with `correlation_id` on the root run metadata | — | SHIPPED 2026-06-20 |
 | 2 | Log pipeline (Alloy) | App/celery logs never reach Loki | Grafana Explore → Loki → `{service="app"}` returns the latest chat-turn JSON logs filterable by `correlation_id` | — (independent of Phase 1) | SHIPPED 2026-06-20 |
 | 3 | Metrics expansion (Alloy-scraped) | Only the FastAPI app is scraped; Prometheus owns all scraping | Alloy owns scraping via `prometheus.scrape` and `prometheus.remote_write` to Prometheus. Qdrant, Postgres, Valkey, RabbitMQ metrics visible in Grafana Explore | — (independent of Phase 1, 2) | SHIPPED 2026-06-20 |
-| 4 | Grafana dashboards (non-AI focus) | Dashboards folder empty | Grafana home shows 4 provisioned JSON dashboards: System Overview, Infrastructure, Logs Explorer, Business Metrics. AI/agent observability lives in LangSmith, not in Grafana. | 2, 3 (depends on log and metric data being queryable) | NEXT |
+| 4 | Grafana dashboards (non-AI focus) | Dashboards folder empty | Grafana home shows 4 provisioned JSON dashboards: System Overview, Infrastructure, Logs Explorer, Business Metrics. AI/agent observability lives in LangSmith, not in Grafana. | 2, 3 (depends on log and metric data being queryable) | SHIPPED 2026-06-21 |
 
 Each phase is **independent** — the system stays operational after any phase.
 

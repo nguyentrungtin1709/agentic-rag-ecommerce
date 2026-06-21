@@ -7,10 +7,30 @@
 // Scrapes 5 /metrics endpoints and remote_writes to Prometheus.
 
 // ─── Container discovery ─────────────────────────────────────────────────────
-// One discovery target per running container in the agentic-rag compose
-// project. The Docker socket is mounted read-only into the Alloy container.
+// One discovery target per running container on the Docker host. The Docker
+// socket is mounted read-only into the Alloy container. We filter down to the
+// agentic-rag compose project below (D18.13 / history/18_0_1_DEPLOYMENT_FIXES)
+// so that containers from sibling compose projects (e.g. saleor-platform)
+// do not leak into Loki and Prometheus.
 discovery.docker "all_containers" {
   host = "unix:///var/run/docker.sock"
+}
+
+// D18.13 — drop any container that is not part of the
+// `agentic-rag-ecommerce` compose project. The Docker daemon exposes the
+// project name as the `com.docker.compose.project` label on every container
+// started by `docker compose up`. Containers from `docker run`, `docker
+// exec`, or other compose projects (e.g. `saleor-platform`) carry a
+// different value (or no value) and are dropped here. Action `keep` with
+// regex `agentic-rag-ecommerce` matches only the in-project containers.
+discovery.relabel "compose_filter" {
+  targets = discovery.docker.all_containers.targets
+
+  rule {
+    action       = "keep"
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    regex         = "agentic-rag-ecommerce"
+  }
 }
 
 // ─── Label extraction ────────────────────────────────────────────────────────
